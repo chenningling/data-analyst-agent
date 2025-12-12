@@ -1,0 +1,204 @@
+# ================================
+# Python 相关
+# ================================
+
+# 虚拟环境
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 分发/打包
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyright
+pyrightconfig.json
+
+# ================================
+# Node.js / 前端相关
+# ================================
+
+# 依赖目录
+node_modules/
+bower_components/
+
+# 构建输出
+dist/
+build/
+.next/
+out/
+
+# 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# 缓存
+.npm
+.eslintcache
+.parcel-cache
+
+# 可选的 npm 缓存目录
+.npm
+
+# TypeScript
+*.tsbuildinfo
+
+# ================================
+# IDE / 编辑器
+# ================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains (PyCharm, WebStorm 等)
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Cursor
+.cursor/
+
+# ================================
+# 操作系统
+# ================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# ================================
+# 环境变量 / 配置文件
+# ================================
+
+# 环境变量文件（包含敏感信息）
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+*.env
+
+# 本地配置
+local_settings.py
+config.local.py
+settings.local.py
+
+# ================================
+# 项目特定
+# ================================
+
+# 上传文件目录
+uploads/
+data_analyst_uploads/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.temp
+
+# 日志文件
+logs/
+*.log
+
+# 生成的报告
+reports/
+output/
+
+# 测试数据
+test_data/
+sample_data/
+
+# 图片缓存
+*.png
+*.jpg
+*.jpeg
+!public/**/*.png
+!public/**/*.jpg
+!frontend/public/**/*.png
+!frontend/public/**/*.svg
+
+# ================================
+# 其他
+# ================================
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Secrets
+*.pem
+*.key
+secrets/
+
+# 数据库
+*.db
+*.sqlite
+*.sqlite3
+
+# 压缩文件（可选）
+# *.zip
+# *.tar.gz
+# *.rar
+

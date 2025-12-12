@@ -1,0 +1,153 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 98%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 6%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 17%;
+    --ring: 217 91% 60%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--secondary) / 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--primary) / 0.4);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary) / 0.6);
+}
+
+/* 代码高亮主题调整 */
+pre code.hljs {
+  background: transparent;
+  padding: 0;
+}
+
+.hljs {
+  background: hsl(var(--card) / 0.5);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+/* 渐变背景 */
+.gradient-bg {
+  background: 
+    radial-gradient(ellipse at 20% 0%, hsl(217 91% 60% / 0.15) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 100%, hsl(280 91% 60% / 0.1) 0%, transparent 50%),
+    hsl(var(--background));
+}
+
+/* 玻璃拟态效果 */
+.glass {
+  background: hsl(var(--card) / 0.4);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgb(255 255 255 / 0.1);
+}
+
+/* 动画延迟工具类 */
+.animation-delay-100 { animation-delay: 100ms; }
+.animation-delay-200 { animation-delay: 200ms; }
+.animation-delay-300 { animation-delay: 300ms; }
+.animation-delay-400 { animation-delay: 400ms; }
+.animation-delay-500 { animation-delay: 500ms; }
+
+/* Markdown 样式 */
+.markdown-content {
+  @apply text-sm max-w-none;
+}
+
+.markdown-content h1 {
+  @apply text-2xl font-bold text-foreground mb-4 mt-6 first:mt-0;
+}
+
+.markdown-content h2 {
+  @apply text-xl font-semibold text-foreground mb-3 mt-5;
+}
+
+.markdown-content h3 {
+  @apply text-lg font-medium text-foreground mb-2 mt-4;
+}
+
+.markdown-content p {
+  @apply text-muted-foreground mb-3 leading-relaxed;
+}
+
+.markdown-content ul, .markdown-content ol {
+  @apply text-muted-foreground mb-3 pl-6;
+}
+
+.markdown-content li {
+  @apply mb-1;
+}
+
+.markdown-content code {
+  @apply bg-secondary/50 text-primary px-1.5 py-0.5 rounded text-sm font-mono;
+}
+
+.markdown-content pre {
+  @apply bg-card/80 rounded-lg p-4 overflow-x-auto mb-4;
+}
+
+.markdown-content pre code {
+  @apply bg-transparent p-0;
+}
+
+.markdown-content blockquote {
+  @apply border-l-4 border-primary/50 pl-4 italic text-muted-foreground;
+}
+
+.markdown-content table {
+  @apply w-full border-collapse mb-4;
+}
+
+.markdown-content th, .markdown-content td {
+  @apply border border-border px-3 py-2 text-left;
+}
+
+.markdown-content th {
+  @apply bg-secondary/30 font-medium;
+}
+
+/* ECharts 容器 */
+.echarts-container {
+  @apply w-full min-h-[300px] bg-card/30 rounded-lg p-4;
+}
+
