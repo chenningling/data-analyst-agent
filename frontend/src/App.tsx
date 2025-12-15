@@ -72,9 +72,10 @@ function App() {
 
       case 'task_completed':
         console.log(`[App] ✅ 任务完成: #${payload.task_id} ${payload.task_name}`)
+        // 任务完成时清除错误状态
         setTasks(prev => prev.map(t => 
           t.id === payload.task_id 
-            ? { ...t, status: 'completed' as const }
+            ? { ...t, status: 'completed' as const, error: undefined }
             : t
         ))
         break

@@ -230,6 +230,14 @@ class AgentLoop:
         logger.info(f"[AgentLoop] 调用 LLM 进行任务规划...")
         self.state.messages.append({"role": "user", "content": planning_prompt})
         
+        # 发送思考过程事件
+        await self.emit_event("llm_thinking", {
+            "phase": "planning",
+            "action": "分析数据结构和用户需求",
+            "thinking": f"正在分析数据集结构（{data_info['statistics'].get('total_columns', 0)}列，{data_info['statistics'].get('total_rows', 0)}行）和用户需求，规划分析任务...",
+            "input_summary": f"用户需求: {self.user_request[:100]}..."
+        })
+        
         # 调用 LLM 生成任务规划
         start = time.time()
         response = self.llm.chat_json(self.state.messages)
@@ -245,6 +253,16 @@ class AgentLoop:
         tasks_data = plan.get("tasks", [])
         logger.info(f"[AgentLoop] LLM 规划完成 (耗时 {duration:.2f}秒)")
         logger.info(f"[AgentLoop] 规划了 {len(tasks_data)} 个任务:")
+        
+        # 发送规划结果的思考过程
+        task_names = [t.get("name", f"任务{i+1}") for i, t in enumerate(tasks_data)]
+        await self.emit_event("llm_thinking", {
+            "phase": "planning",
+            "action": "任务规划完成",
+            "thinking": f"根据用户需求，我制定了 {len(tasks_data)} 个分析任务：{', '.join(task_names)}。分析目标：{plan.get('analysis_goal', '完成数据分析')}",
+            "output_summary": f"规划了 {len(tasks_data)} 个任务",
+            "duration": duration
+        })
         
         for i, task_data in enumerate(tasks_data):
             task = Task(
@@ -357,12 +375,24 @@ class AgentLoop:
         
         self.state.messages.append({"role": "user", "content": exec_prompt})
         
+        # 发送思考过程事件
+        await self.emit_event("llm_thinking", {
+            "phase": "executing",
+            "action": "分析任务需求",
+            "thinking": f"正在分析任务 [{task.id}] {task.name}，决定执行策略...",
+            "task_id": task.id,
+            "task_name": task.name,
+            "input_summary": f"任务描述: {task.description[:100]}..."
+        })
+        
         # 调用 LLM 决定下一步
         logger.info(f"[AgentLoop] 调用 LLM 决策...")
+        start_time = time.time()
         response = self.llm.chat(
             self.state.messages,
             tools=TOOLS_SCHEMA
         )
+        duration = time.time() - start_time
         
         if response["type"] == "error":
             raise Exception(f"LLM 调用失败: {response['error']}")
@@ -370,12 +400,42 @@ class AgentLoop:
         # 处理工具调用
         if response["type"] == "tool_call":
             logger.info(f"[AgentLoop] LLM 决定调用工具: {response['name']}")
+            
+            # 发送决策思考过程
+            tool_name = response["name"]
+            arguments = response.get("arguments", {})
+            
+            if tool_name == "run_code":
+                thinking_msg = f"我决定编写 Python 代码来完成这个任务。代码将: {arguments.get('description', '执行数据分析')}"
+            elif tool_name == "read_dataset":
+                thinking_msg = f"我需要先查看数据集的详细信息，以便更好地理解数据结构"
+            else:
+                thinking_msg = f"我决定调用 {tool_name} 工具"
+            
+            await self.emit_event("llm_thinking", {
+                "phase": "executing",
+                "action": "决策",
+                "thinking": thinking_msg,
+                "decision": f"调用工具: {tool_name}",
+                "task_id": task.id,
+                "duration": duration
+            })
+            
             await self._handle_tool_call(task, response)
         else:
             # 普通响应，记录结果
             logger.info(f"[AgentLoop] LLM 返回文本响应")
             content = response["content"]
             self.state.messages.append({"role": "assistant", "content": content})
+            
+            # 发送思考过程
+            await self.emit_event("llm_thinking", {
+                "phase": "executing",
+                "action": "分析结论",
+                "thinking": content[:300] + ("..." if len(content) > 300 else ""),
+                "task_id": task.id,
+                "duration": duration
+            })
             
             task.result = {"summary": content[:500]}
             self.state.analysis_results.append({
@@ -521,6 +581,15 @@ class AgentLoop:
             logger.info(f"[AgentLoop] 无原始代码，无法恢复")
             return False
         
+        # 发送错误分析思考过程
+        await self.emit_event("llm_thinking", {
+            "phase": "error_recovery",
+            "action": "分析错误",
+            "thinking": f"任务执行出错了，我来分析一下错误原因：{error[:200]}...",
+            "task_id": task.id,
+            "error": error[:200]
+        })
+        
         # 构建错误恢复提示
         recovery_prompt = ERROR_RECOVERY_PROMPT.format(
             error_message=error,
@@ -531,10 +600,21 @@ class AgentLoop:
         
         # 请求 LLM 修复
         logger.info(f"[AgentLoop] 请求 LLM 修复代码...")
+        start_time = time.time()
         response = self.llm.chat(self.state.messages, tools=TOOLS_SCHEMA)
+        duration = time.time() - start_time
         
         if response["type"] == "tool_call" and response["name"] == "run_code":
             try:
+                # 发送修复思考过程
+                await self.emit_event("llm_thinking", {
+                    "phase": "error_recovery",
+                    "action": "修复代码",
+                    "thinking": f"我找到了问题所在，正在修复代码并重新执行...",
+                    "task_id": task.id,
+                    "duration": duration
+                })
+                
                 logger.info(f"[AgentLoop] LLM 提供了修复代码，执行中...")
                 await self._handle_tool_call(task, response)
                 self.state.update_task_status(task.id, TaskStatus.COMPLETED)
@@ -561,6 +641,15 @@ class AgentLoop:
         
         logger.info(f"[AgentLoop] 分析结果数量: {len(self.state.analysis_results)}")
         
+        # 发送报告生成思考过程
+        completed_tasks = [t.name for t in self.state.tasks if t.status == TaskStatus.COMPLETED]
+        await self.emit_event("llm_thinking", {
+            "phase": "reporting",
+            "action": "汇总分析结果",
+            "thinking": f"所有分析任务已完成，我将汇总 {len(self.state.analysis_results)} 个分析结果，生成完整的数据分析报告。已完成的任务包括：{', '.join(completed_tasks)}",
+            "input_summary": f"分析结果数量: {len(self.state.analysis_results)}, 图表数量: {len(self.state.images)}"
+        })
+        
         report_prompt = REPORT_GENERATION_PROMPT.format(
             analysis_results=results_summary
         )
@@ -580,6 +669,15 @@ class AgentLoop:
             self.state.final_report = response["content"]
             logger.info(f"[AgentLoop] 报告生成完成 (耗时 {duration:.2f}秒)")
             logger.info(f"[AgentLoop] 报告长度: {len(self.state.final_report)} 字符")
+            
+            # 发送报告完成思考过程
+            await self.emit_event("llm_thinking", {
+                "phase": "reporting",
+                "action": "报告生成完成",
+                "thinking": f"报告已生成完成，包含数据概览、关键发现、可视化图表和洞察建议等内容。报告长度: {len(self.state.final_report)} 字符",
+                "output_summary": f"报告长度: {len(self.state.final_report)} 字符",
+                "duration": duration
+            })
         
         await self.emit_event("report_generated", {
             "report": self.state.final_report

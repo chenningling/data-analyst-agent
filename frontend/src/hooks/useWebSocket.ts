@@ -132,6 +132,9 @@ export function useWebSocket(sessionId: string | null, options: UseWebSocketOpti
               case 'log':
                 console.log('[WebSocket]   └─ 日志:', data.payload.message)
                 break
+              case 'llm_thinking':
+                console.log('[WebSocket]   └─ LLM 思考:', data.payload.action, data.payload.thinking?.toString().slice(0, 50))
+                break
               default:
                 console.log('[WebSocket]   └─ payload:', JSON.stringify(data.payload).slice(0, 100))
             }

@@ -23,7 +23,11 @@ from fastapi.staticfiles import StaticFiles
 
 from agent import AgentLoop
 from config.settings import settings
-from utils.logger import logger
+from utils.logger import logger, SessionLogger
+
+
+# 全局会话日志记录器
+session_loggers: Dict[str, SessionLogger] = {}
 
 
 # -------------------
@@ -140,18 +144,21 @@ class ConnectionManager:
         """向特定 session 发送消息"""
         connections = self.active_connections.get(session_id, []) + self.broadcast_connections
         
+        event_type = data.get('type', 'unknown')
+        
         # 如果没有活跃连接，先缓存事件
         if not connections:
             event_buffer.add_event(session_id, data)
-            logger.debug(f"[ConnectionManager] 无活跃连接，事件已缓存: session={session_id}, type={data.get('type')}")
+            logger.info(f"[ConnectionManager] ⚠️ 无活跃连接，事件已缓存: session={session_id[:8]}, type={event_type}")
             return
+        
+        logger.info(f"[ConnectionManager] 📤 发送事件: session={session_id[:8]}, type={event_type}, connections={len(connections)}")
         
         for connection in connections:
             try:
                 await connection.send_json(data)
-                logger.debug(f"[ConnectionManager] 发送事件: session={session_id}, type={data.get('type')}")
             except Exception as e:
-                logger.error(f"发送 WebSocket 消息失败: {e}")
+                logger.error(f"[ConnectionManager] 发送 WebSocket 消息失败: {e}")
     
     async def broadcast(self, data: dict):
         """广播消息给所有连接"""
@@ -249,9 +256,22 @@ async def start_analysis(
     # 创建会话缓冲（关键：在 Agent 启动前创建）
     event_buffer.create_session(session_id)
     
-    # 创建事件回调
+    # 创建会话日志记录器（保存到 record 文件夹）
+    session_logger = SessionLogger(session_id, user_request)
+    session_loggers[session_id] = session_logger
+    session_logger.log(f"文件已上传: {filename}, 大小: {len(content)} 字节")
+    
+    # 创建事件回调（同时发送 WebSocket 和记录日志）
     async def event_callback(event: dict):
+        event_type = event.get('type', 'unknown')
+        logger.info(f"[EventCallback] 收到事件: session={session_id[:8]}, type={event_type}")
+        
+        # 发送 WebSocket
         await manager.send_to_session(session_id, event)
+        
+        # 记录到日志文件
+        if session_id in session_loggers:
+            session_loggers[session_id].log_event(event)
     
     # 创建并启动 Agent（带 WebSocket 等待）
     agent = AgentLoop(
@@ -296,11 +316,17 @@ async def run_agent_with_ws_wait(agent: AgentLoop, session_id: str):
 
 async def run_agent_with_error_handling(agent: AgentLoop, session_id: str):
     """带错误处理的 Agent 运行"""
+    import time
+    start_time = time.time()
+    status = "completed"
+    
     try:
         logger.info(f"[Agent] 开始执行任务: session={session_id}")
         result = await agent.run()
-        logger.info(f"[Agent] 执行完成: session={session_id}, status={result.get('status')}")
+        status = result.get('status', 'completed')
+        logger.info(f"[Agent] 执行完成: session={session_id}, status={status}")
     except Exception as e:
+        status = "error"
         logger.error(f"[Agent] 执行失败: session={session_id}, error={e}", exc_info=True)
         await manager.send_to_session(session_id, {
             "type": "error",
@@ -308,6 +334,12 @@ async def run_agent_with_error_handling(agent: AgentLoop, session_id: str):
             "payload": {"error": str(e)}
         })
     finally:
+        # 完成会话日志记录
+        total_duration = time.time() - start_time
+        if session_id in session_loggers:
+            session_loggers[session_id].finalize(status, total_duration)
+            del session_loggers[session_id]
+        
         # 清理会话缓冲
         event_buffer.cleanup(session_id)
 
@@ -372,7 +404,8 @@ async def websocket_session(websocket: WebSocket, session_id: str):
         await websocket.send_json({
             "type": "connected",
             "timestamp": datetime.utcnow().isoformat() + "Z",
-            "session_id": session_id
+            "session_id": session_id,
+            "payload": {"message": "WebSocket 连接成功"}
         })
         logger.info(f"[WebSocket] 已发送连接确认: session={session_id}")
         

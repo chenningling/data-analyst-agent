@@ -5,10 +5,12 @@ LLM 客户端模块 - 封装大模型调用
 - 封装 OpenAI API 调用
 - 详细的输入/输出日志记录
 - 支持 Function Calling
+- 完整的请求/响应 JSON 记录（保存到 record 文件夹）
 """
 import json
 import os
 import time
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 
@@ -27,7 +29,71 @@ class LLMClient:
         self.model = settings.LLM_MODEL
         self.call_count = 0
         
+        # 获取项目根目录下的 record 文件夹路径
+        self.record_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "record"
+        )
+        # 确保 record 目录存在
+        os.makedirs(self.record_dir, exist_ok=True)
+        
+        # 创建当前会话的日志文件名（基于时间戳）
+        self.session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file_path = os.path.join(
+            self.record_dir, 
+            f"llm_log_{self.session_timestamp}.txt"
+        )
+        
         logger.info(f"[LLM] 客户端初始化: model={self.model}, base_url={settings.LLM_BASE_URL or 'default'}")
+        logger.info(f"[LLM] JSON日志文件: {self.log_file_path}")
+    
+    def _save_json_log(
+        self, 
+        request_data: Dict[str, Any], 
+        response_data: Dict[str, Any], 
+        raw_response: Optional[Any] = None,
+        duration: float = 0
+    ):
+        """
+        保存请求和响应的完整 JSON 到文件
+        
+        Args:
+            request_data: 发送给大模型的请求数据
+            response_data: 处理后的响应数据
+            raw_response: 原始 API 响应对象
+            duration: 请求耗时
+        """
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            
+            log_entry = {
+                "call_number": self.call_count,
+                "timestamp": timestamp,
+                "duration_seconds": round(duration, 3),
+                "request": request_data,
+                "response": response_data
+            }
+            
+            # 如果有原始响应，尝试提取 usage 信息
+            if raw_response and hasattr(raw_response, 'usage') and raw_response.usage:
+                log_entry["token_usage"] = {
+                    "prompt_tokens": raw_response.usage.prompt_tokens,
+                    "completion_tokens": raw_response.usage.completion_tokens,
+                    "total_tokens": raw_response.usage.total_tokens
+                }
+            
+            # 追加写入日志文件
+            with open(self.log_file_path, 'a', encoding='utf-8') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"=== LLM 调用 #{self.call_count} - {timestamp} ===\n")
+                f.write(f"{'='*80}\n\n")
+                f.write(json.dumps(log_entry, ensure_ascii=False, indent=2))
+                f.write(f"\n\n")
+            
+            logger.debug(f"[LLM] JSON日志已保存: 调用 #{self.call_count}")
+            
+        except Exception as e:
+            logger.warning(f"[LLM] 保存JSON日志失败: {e}")
     
     def _log_request(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, extra_params: dict = None):
         """记录请求日志"""
@@ -122,6 +188,17 @@ class LLMClient:
         
         start_time = time.time()
         
+        # 构建请求数据用于日志
+        request_data = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        if tools:
+            request_data["tools"] = tools
+            request_data["tool_choice"] = "auto"
+        
         try:
             kwargs = {
                 "model": self.model,
@@ -143,6 +220,33 @@ class LLMClient:
             if hasattr(response, 'usage') and response.usage:
                 logger.info(f"[LLM] Token 使用: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, total={response.usage.total_tokens}")
             
+            # 构建原始响应数据用于日志
+            raw_response_data = {
+                "id": response.id if hasattr(response, 'id') else None,
+                "model": response.model if hasattr(response, 'model') else None,
+                "choices": [{
+                    "index": response.choices[0].index if hasattr(response.choices[0], 'index') else 0,
+                    "message": {
+                        "role": message.role,
+                        "content": message.content
+                    },
+                    "finish_reason": response.choices[0].finish_reason if hasattr(response.choices[0], 'finish_reason') else None
+                }]
+            }
+            
+            # 如果有工具调用，添加到响应数据
+            if message.tool_calls:
+                raw_response_data["choices"][0]["message"]["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    } for tc in message.tool_calls
+                ]
+            
             # 检查是否有工具调用
             if message.tool_calls:
                 tool_call = message.tool_calls[0]
@@ -153,6 +257,10 @@ class LLMClient:
                     "arguments": json.loads(tool_call.function.arguments)
                 }
                 self._log_response("tool_call", result, duration)
+                
+                # 保存 JSON 日志
+                self._save_json_log(request_data, raw_response_data, response, duration)
+                
                 return result
             
             # 普通文本响应
@@ -161,6 +269,10 @@ class LLMClient:
                 "content": message.content or ""
             }
             self._log_response("response", result, duration)
+            
+            # 保存 JSON 日志
+            self._save_json_log(request_data, raw_response_data, response, duration)
+            
             return result
             
         except Exception as e:
@@ -170,6 +282,10 @@ class LLMClient:
                 "error": str(e)
             }
             self._log_response("error", result, duration)
+            
+            # 保存错误日志
+            self._save_json_log(request_data, {"error": str(e), "type": "error"}, None, duration)
+            
             return result
     
     def chat_json(
@@ -184,6 +300,14 @@ class LLMClient:
         self._log_request(messages, None, {"temperature": temperature, "response_format": "json_object"})
         
         start_time = time.time()
+        
+        # 构建请求数据用于日志
+        request_data = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "response_format": {"type": "json_object"}
+        }
         
         try:
             response = self.client.chat.completions.create(
@@ -200,6 +324,20 @@ class LLMClient:
             if hasattr(response, 'usage') and response.usage:
                 logger.info(f"[LLM] Token 使用: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, total={response.usage.total_tokens}")
             
+            # 构建原始响应数据用于日志
+            raw_response_data = {
+                "id": response.id if hasattr(response, 'id') else None,
+                "model": response.model if hasattr(response, 'model') else None,
+                "choices": [{
+                    "index": response.choices[0].index if hasattr(response.choices[0], 'index') else 0,
+                    "message": {
+                        "role": response.choices[0].message.role,
+                        "content": content
+                    },
+                    "finish_reason": response.choices[0].finish_reason if hasattr(response.choices[0], 'finish_reason') else None
+                }]
+            }
+            
             result = {
                 "type": "response",
                 "content": json.loads(content)
@@ -211,6 +349,9 @@ class LLMClient:
             logger.info(f"[LLM] JSON 内容预览: {json.dumps(result['content'], ensure_ascii=False)[:500]}")
             logger.info(f"{'='*60}\n")
             
+            # 保存 JSON 日志
+            self._save_json_log(request_data, raw_response_data, response, duration)
+            
             return result
             
         except json.JSONDecodeError as e:
@@ -220,6 +361,10 @@ class LLMClient:
                 "error": f"JSON 解析错误: {str(e)}"
             }
             self._log_response("error", result, duration)
+            
+            # 保存错误日志
+            self._save_json_log(request_data, {"error": str(e), "type": "json_decode_error"}, None, duration)
+            
             return result
         except Exception as e:
             duration = time.time() - start_time
@@ -228,6 +373,10 @@ class LLMClient:
                 "error": str(e)
             }
             self._log_response("error", result, duration)
+            
+            # 保存错误日志
+            self._save_json_log(request_data, {"error": str(e), "type": "error"}, None, duration)
+            
             return result
 
 
