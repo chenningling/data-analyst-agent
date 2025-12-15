@@ -413,38 +413,43 @@ case 'tasks_updated':
 
 ## 六、实施步骤
 
-### 第一阶段：提示词改造（0.5 天）
+### 第一阶段：提示词改造（0.5 天）✅ 已完成
 
-1. [ ] 设计新的 `AUTONOMOUS_AGENT_PROMPT`
+1. [x] 设计新的 `AUTONOMOUS_AGENT_PROMPT`
    - 包含 `<thinking>` 思考过程标签
    - 包含 `<tasks>` 任务状态标签
-2. [ ] 删除不再需要的分阶段提示词
-3. [ ] 测试提示词效果（可用 OpenAI Playground）
+2. [x] 保留旧版分阶段提示词（用于回滚）
+3. [x] 导出新提示词到 `__init__.py`
 
-### 第二阶段：循环逻辑重构（1 天）
+### 第二阶段：循环逻辑重构（1 天）✅ 已完成
 
-1. [ ] 创建新的 `AutonomousAgentLoop` 类（可保留旧类做对比）
-2. [ ] 实现自主循环逻辑
-3. [ ] 实现思考过程解析（`_extract_thinking`）
-4. [ ] 实现任务状态解析（`_extract_tasks`）
-5. [ ] 实现完成检测（`[ANALYSIS_COMPLETE]`）
-6. [ ] 发送 `llm_thinking` 事件（真实思考）
-7. [ ] 发送 `tasks_updated` 事件（任务状态更新）
+1. [x] 创建新的 `AutonomousAgentLoop` 类（保留旧类做对比）
+2. [x] 实现自主循环逻辑
+3. [x] 实现思考过程解析（`_extract_thinking`）
+4. [x] 实现任务状态解析（`_extract_tasks`）
+5. [x] 实现完成检测（`[ANALYSIS_COMPLETE]`）
+6. [x] 发送 `llm_thinking` 事件（真实思考，`is_real=True`）
+7. [x] 发送 `tasks_updated` 事件（任务状态更新，`source=llm`）
 
-### 第三阶段：状态管理调整（0.25 天）
+### 第三阶段：状态管理调整（0.25 天）✅ 已完成
 
-1. [ ] 简化 `AgentPhase` 枚举
-2. [ ] 添加思考历史记录
-3. [ ] 支持 LLM 自主管理的任务列表
+1. [x] 添加 `thinking_history` 字段到 `AgentState`
+2. [x] 添加 `AGENT_MODE` 配置项（`autonomous` / `staged`）
 
-### 第四阶段：前端适配（0.25 天）
+### 第四阶段：main.py 模式切换（0.25 天）✅ 已完成
 
-1. [ ] 更新 `llm_thinking` 事件展示（区分真实思考 vs 系统消息）
-2. [ ] 处理 `tasks_updated` 事件，动态更新任务列表
-3. [ ] 确保 `TaskList.tsx` 正确显示打勾状态
-4. [ ] 测试完整流程
+1. [x] 根据 `settings.AGENT_MODE` 选择 Agent 类
+2. [x] 修改类型注解支持两种 Agent
 
-### 第五阶段：测试与优化（0.5 天）
+### 第五阶段：前端适配（0.25 天）✅ 已完成
+
+1. [x] 更新 `llm_thinking` 事件展示（区分真实思考 vs 系统消息）
+2. [x] 处理 `tasks_updated` 事件，动态更新任务列表
+3. [x] 添加 `tasks_updated` 事件图标和颜色
+4. [x] 添加 `autonomous_running` 阶段标签
+5. [x] 确保 `TaskList.tsx` 正确显示打勾状态（已有，无需修改）
+
+### 第六阶段：测试与优化（待进行）
 
 1. [ ] 端到端测试
 2. [ ] 边界情况处理（LLM 忘记输出标签、格式错误等）

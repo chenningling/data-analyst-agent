@@ -254,7 +254,8 @@ class LLMClient:
                     "type": "tool_call",
                     "tool_call_id": tool_call.id,
                     "name": tool_call.function.name,
-                    "arguments": json.loads(tool_call.function.arguments)
+                    "arguments": json.loads(tool_call.function.arguments),
+                    "content": message.content or ""  # 保留文本内容（LLM 可能同时输出文本和工具调用）
                 }
                 self._log_response("tool_call", result, duration)
                 

@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from agent import AgentLoop
+from agent import AgentLoop, AutonomousAgentLoop
 from config.settings import settings
 from utils.logger import logger, SessionLogger
 
@@ -273,12 +273,24 @@ async def start_analysis(
         if session_id in session_loggers:
             session_loggers[session_id].log_event(event)
     
-    # 创建并启动 Agent（带 WebSocket 等待）
-    agent = AgentLoop(
-        dataset_path=str(dataset_path),
-        user_request=user_request,
-        event_callback=event_callback
-    )
+    # 根据配置选择 Agent 模式
+    agent_mode = settings.AGENT_MODE
+    logger.info(f"[API] Agent 模式: {agent_mode}")
+    
+    if agent_mode == "autonomous":
+        # 自主循环模式
+        agent = AutonomousAgentLoop(
+            dataset_path=str(dataset_path),
+            user_request=user_request,
+            event_callback=event_callback
+        )
+    else:
+        # 传统分阶段模式
+        agent = AgentLoop(
+            dataset_path=str(dataset_path),
+            user_request=user_request,
+            event_callback=event_callback
+        )
     
     # 异步运行 Agent（等待 WebSocket 连接后再开始）
     asyncio.create_task(run_agent_with_ws_wait(agent, session_id))
@@ -293,7 +305,7 @@ async def start_analysis(
     })
 
 
-async def run_agent_with_ws_wait(agent: AgentLoop, session_id: str):
+async def run_agent_with_ws_wait(agent, session_id: str):
     """
     等待 WebSocket 连接后再运行 Agent
     这是解决时序问题的关键函数
@@ -314,7 +326,7 @@ async def run_agent_with_ws_wait(agent: AgentLoop, session_id: str):
     await run_agent_with_error_handling(agent, session_id)
 
 
-async def run_agent_with_error_handling(agent: AgentLoop, session_id: str):
+async def run_agent_with_error_handling(agent, session_id: str):
     """带错误处理的 Agent 运行"""
     import time
     start_time = time.time()
@@ -374,12 +386,21 @@ async def start_analysis_sync(
         events.append(event)
         await manager.send_to_session(session_id, event)
     
-    # 同步运行 Agent
-    agent = AgentLoop(
-        dataset_path=str(dataset_path),
-        user_request=user_request,
-        event_callback=event_callback
-    )
+    # 根据配置选择 Agent 模式
+    agent_mode = settings.AGENT_MODE
+    
+    if agent_mode == "autonomous":
+        agent = AutonomousAgentLoop(
+            dataset_path=str(dataset_path),
+            user_request=user_request,
+            event_callback=event_callback
+        )
+    else:
+        agent = AgentLoop(
+            dataset_path=str(dataset_path),
+            user_request=user_request,
+            event_callback=event_callback
+        )
     
     result = await agent.run()
     

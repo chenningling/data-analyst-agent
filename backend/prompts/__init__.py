@@ -1,10 +1,13 @@
 """提示词模块"""
 from .system_prompts import (
+    # 旧版分阶段提示词
     AGENT_SYSTEM_PROMPT,
     PLANNING_PROMPT,
     EXECUTION_PROMPT,
     REPORT_GENERATION_PROMPT,
-    ERROR_RECOVERY_PROMPT
+    ERROR_RECOVERY_PROMPT,
+    # 新版自主循环提示词
+    AUTONOMOUS_AGENT_PROMPT
 )
 
 __all__ = [
@@ -12,6 +15,7 @@ __all__ = [
     "PLANNING_PROMPT",
     "EXECUTION_PROMPT",
     "REPORT_GENERATION_PROMPT",
-    "ERROR_RECOVERY_PROMPT"
+    "ERROR_RECOVERY_PROMPT",
+    "AUTONOMOUS_AGENT_PROMPT"
 ]
 

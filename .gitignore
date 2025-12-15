@@ -164,10 +164,10 @@ logs/
 *.log
 
 # 会话日志记录目录
-record/*.txt
+# record/*.txt
 
 # 生成的报告
-# reports/
+reports/
 output/
 
 # 测试数据

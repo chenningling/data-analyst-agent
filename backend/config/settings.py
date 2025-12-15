@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     max_iterations: int = Field(default=20, alias="MAX_ITERATIONS")
     code_timeout: int = Field(default=30, alias="CODE_TIMEOUT")
     max_history_items: int = Field(default=30, alias="MAX_HISTORY_ITEMS")
+    agent_mode: str = Field(default="autonomous", alias="AGENT_MODE")  # "autonomous" 或 "staged"
     
     # 文件配置
     upload_dir: str = Field(default="/tmp/data_analyst_uploads", alias="UPLOAD_DIR")
@@ -70,6 +71,10 @@ class Settings(BaseSettings):
     @property
     def WS_HEARTBEAT_INTERVAL(self) -> int:
         return self.ws_heartbeat_interval
+    
+    @property
+    def AGENT_MODE(self) -> str:
+        return self.agent_mode
 
 
 settings = Settings()

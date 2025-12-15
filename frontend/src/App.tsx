@@ -60,6 +60,34 @@ function App() {
         setTasks(plannedTasks)
         break
 
+      case 'tasks_updated':
+        // 自主循环模式：LLM 自主更新任务状态
+        const updatedTasks = (payload.tasks as Task[]) || []
+        console.log(`[App] 🔄 任务状态更新 (来源: ${payload.source}): ${updatedTasks.length} 个任务`)
+        updatedTasks.forEach((t, i) => console.log(`[App]   ${t.status === 'completed' ? '✅' : '⏳'} ${t.name}`))
+        
+        if (payload.source === 'llm') {
+          // LLM 自主更新的任务状态：合并更新
+          setTasks(prevTasks => {
+            if (prevTasks.length === 0) {
+              // 如果没有之前的任务，直接使用新任务
+              return updatedTasks.map(t => ({
+                ...t,
+                status: t.status as Task['status']
+              }))
+            }
+            // 合并更新：保留原有任务信息，更新状态
+            return updatedTasks.map((newTask, index) => ({
+              ...(prevTasks[index] || {}),
+              ...newTask,
+              status: newTask.status as Task['status']
+            }))
+          })
+        } else {
+          setTasks(updatedTasks)
+        }
+        break
+
       case 'task_started':
         console.log(`[App] ▶️ 任务开始: #${payload.task_id} ${payload.task_name}`)
         setCurrentTaskId(payload.task_id as number)

@@ -73,6 +73,8 @@ class AgentState:
     error: Optional[str] = None
     started_at: datetime = field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
+    # 新增：思考历史（用于自主循环模式）
+    thinking_history: List[str] = field(default_factory=list)
     
     def get_task(self, task_id: int) -> Optional[Task]:
         """获取指定ID的任务"""

@@ -39,6 +39,7 @@ const eventIcons: Record<string, React.ComponentType<{ className?: string }>> = 
   log: Terminal,
   data_explored: Database,
   tasks_planned: FileText,
+  tasks_updated: FileText,
   llm_thinking: Brain,
 }
 
@@ -59,6 +60,7 @@ const eventColors: Record<string, string> = {
   log: 'text-muted-foreground',
   data_explored: 'text-cyan-400',
   tasks_planned: 'text-purple-400',
+  tasks_updated: 'text-emerald-400',
   llm_thinking: 'text-violet-400',
 }
 
@@ -68,6 +70,7 @@ const phaseLabels: Record<string, string> = {
   executing: '⚡ 执行分析',
   reporting: '📝 生成报告',
   error_recovery: '🔧 错误修复',
+  autonomous_running: '🤖 自主分析中',
 }
 
 // 判断事件是否有详细内容可展开
@@ -88,6 +91,8 @@ function hasExpandableContent(event: AgentEvent): boolean {
     case 'data_explored':
       return true
     case 'tasks_planned':
+      return !!(payload.tasks)
+    case 'tasks_updated':
       return !!(payload.tasks)
     default:
       return false
@@ -223,6 +228,12 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
       case 'tasks_planned':
         return `规划了 ${(payload.tasks as unknown[])?.length || 0} 个任务`
       
+      case 'tasks_updated':
+        const updatedTasksList = payload.tasks as Array<{status: string}>
+        const completedCount = updatedTasksList?.filter(t => t.status === 'completed').length || 0
+        const totalCount = updatedTasksList?.length || 0
+        return `任务进度: ${completedCount}/${totalCount} 已完成`
+      
       case 'data_explored':
         return `数据集: ${(payload.statistics as Record<string, number>)?.total_rows || 0} 行 × ${(payload.statistics as Record<string, number>)?.total_columns || 0} 列`
       
@@ -259,6 +270,13 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
       case 'llm_thinking':
         return (
           <div className="mt-2 p-3 bg-violet-500/10 rounded-lg border border-violet-500/20">
+            {/* 区分真实思考 vs 系统生成 */}
+            {payload.is_real && (
+              <div className="text-xs text-violet-400 mb-2 flex items-center gap-1">
+                <span className="inline-block w-2 h-2 rounded-full bg-violet-400 animate-pulse"></span>
+                Agent 思考中...
+              </div>
+            )}
             <p className="text-sm text-violet-200 whitespace-pre-wrap">
               {payload.thinking as string}
             </p>
@@ -270,6 +288,11 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
             {payload.output_summary && (
               <p className="text-xs text-muted-foreground mt-1">
                 输出: {payload.output_summary as string}
+              </p>
+            )}
+            {payload.iteration && (
+              <p className="text-xs text-muted-foreground mt-1">
+                迭代: #{payload.iteration as number}
               </p>
             )}
           </div>
@@ -334,6 +357,29 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
                   </span>
                   <span>{task.name}</span>
                   <span className="text-xs px-1.5 py-0.5 rounded bg-secondary/50">{task.type}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      
+      case 'tasks_updated':
+        return (
+          <div className="mt-2 space-y-1">
+            <div className="text-xs space-y-1">
+              {(payload.tasks as Array<{id: number, name: string, status: string}>)?.map((task, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className={cn(
+                    "w-5 h-5 rounded flex items-center justify-center text-xs",
+                    task.status === 'completed' 
+                      ? "bg-green-500/20 text-green-400" 
+                      : "bg-secondary text-muted-foreground"
+                  )}>
+                    {task.status === 'completed' ? '✓' : task.id}
+                  </span>
+                  <span className={task.status === 'completed' ? 'text-green-400' : 'text-muted-foreground'}>
+                    {task.name}
+                  </span>
                 </div>
               ))}
             </div>
