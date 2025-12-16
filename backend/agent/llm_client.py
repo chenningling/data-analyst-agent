@@ -28,6 +28,7 @@ class LLMClient:
         )
         self.model = settings.LLM_MODEL
         self.call_count = 0
+        self.current_session_id = None
         
         # 获取项目根目录下的 record 文件夹路径
         self.record_dir = os.path.join(
@@ -37,7 +38,7 @@ class LLMClient:
         # 确保 record 目录存在
         os.makedirs(self.record_dir, exist_ok=True)
         
-        # 创建当前会话的日志文件名（基于时间戳）
+        # 默认日志文件路径（会在 set_session 时更新）
         self.session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_file_path = os.path.join(
             self.record_dir, 
@@ -46,6 +47,29 @@ class LLMClient:
         
         logger.info(f"[LLM] 客户端初始化: model={self.model}, base_url={settings.LLM_BASE_URL or 'default'}")
         logger.info(f"[LLM] JSON日志文件: {self.log_file_path}")
+    
+    def set_session(self, session_id: str):
+        """
+        设置当前 session，更新日志文件路径
+        
+        每个 session 会生成独立的 llm_log 文件
+        
+        Args:
+            session_id: 会话 ID
+        """
+        self.current_session_id = session_id
+        self.call_count = 0  # 重置调用计数
+        self.session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # 使用 session_id 前8位 + 时间戳 作为文件名，方便关联
+        short_session_id = session_id[:8] if len(session_id) >= 8 else session_id
+        self.log_file_path = os.path.join(
+            self.record_dir, 
+            f"llm_log_{short_session_id}_{self.session_timestamp}.txt"
+        )
+        
+        logger.info(f"[LLM] 切换 Session: {session_id[:8]}...")
+        logger.info(f"[LLM] 新日志文件: {self.log_file_path}")
     
     def _save_json_log(
         self, 

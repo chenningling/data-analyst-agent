@@ -42,7 +42,6 @@ class AutonomousAgentLoop:
         self.dataset_path = dataset_path
         self.user_request = user_request
         self.event_callback = event_callback
-        self.llm = get_llm_client()
         self.start_time = None
         
         # 创建 Agent 状态
@@ -51,6 +50,10 @@ class AutonomousAgentLoop:
             dataset_path=dataset_path,
             user_request=user_request
         )
+        
+        # 获取 LLM 客户端并设置 session（每个 session 独立日志文件）
+        self.llm = get_llm_client()
+        self.llm.set_session(self.state.session_id)
         
         # 初始化消息历史 - 只有 system 提示词
         self.state.messages = [
