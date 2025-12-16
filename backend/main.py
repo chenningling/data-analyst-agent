@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from agent import AgentLoop, AutonomousAgentLoop, HybridAgentLoop, TaskDrivenAgentLoop
+from agent import AgentLoop, AutonomousAgentLoop, HybridAgentLoop, TaskDrivenAgentLoop, ToolDrivenAgentLoop
 from config.settings import settings
 from utils.logger import logger, SessionLogger
 
@@ -277,8 +277,15 @@ async def start_analysis(
     agent_mode = settings.AGENT_MODE
     logger.info(f"[API] Agent 模式: {agent_mode}")
     
-    if agent_mode == "task_driven":
-        # 任务驱动模式（推荐）：工具化任务管理 + 任务验收机制
+    if agent_mode == "tool_driven":
+        # 工具驱动模式（推荐）：LLM 完全自主管理任务生命周期
+        agent = ToolDrivenAgentLoop(
+            dataset_path=str(dataset_path),
+            user_request=user_request,
+            event_callback=event_callback
+        )
+    elif agent_mode == "task_driven":
+        # 任务驱动模式：代码驱动 + 工具辅助
         agent = TaskDrivenAgentLoop(
             dataset_path=str(dataset_path),
             user_request=user_request,
@@ -292,7 +299,7 @@ async def start_analysis(
             event_callback=event_callback
         )
     elif agent_mode == "autonomous":
-        # 自主循环模式：LLM 完全自主决策
+        # 自主循环模式：LLM 完全自主决策（标签解析）
         agent = AutonomousAgentLoop(
             dataset_path=str(dataset_path),
             user_request=user_request,
@@ -403,7 +410,13 @@ async def start_analysis_sync(
     # 根据配置选择 Agent 模式
     agent_mode = settings.AGENT_MODE
     
-    if agent_mode == "task_driven":
+    if agent_mode == "tool_driven":
+        agent = ToolDrivenAgentLoop(
+            dataset_path=str(dataset_path),
+            user_request=user_request,
+            event_callback=event_callback
+        )
+    elif agent_mode == "task_driven":
         agent = TaskDrivenAgentLoop(
             dataset_path=str(dataset_path),
             user_request=user_request,
