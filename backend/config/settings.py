@@ -27,10 +27,11 @@ class Settings(BaseSettings):
     code_timeout: int = Field(default=30, alias="CODE_TIMEOUT")
     max_history_items: int = Field(default=30, alias="MAX_HISTORY_ITEMS")
     # Agent 运行模式：
-    # - "hybrid": 混合模式（推荐）- 代码控制任务流程 + LLM 自主执行
+    # - "task_driven": 任务驱动模式（推荐）- 工具化任务管理 + 任务验收机制
+    # - "hybrid": 混合模式 - 代码控制任务流程 + LLM 自主执行
     # - "autonomous": 自主模式 - LLM 完全自主决策
     # - "staged": 分阶段模式 - 传统的明确阶段划分
-    agent_mode: str = Field(default="hybrid", alias="AGENT_MODE")
+    agent_mode: str = Field(default="task_driven", alias="AGENT_MODE")
     # 每个任务最大迭代次数（仅 hybrid 模式使用）
     max_iterations_per_task: int = Field(default=5, alias="MAX_ITERATIONS_PER_TASK")
     
