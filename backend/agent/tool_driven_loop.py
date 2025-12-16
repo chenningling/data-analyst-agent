@@ -339,15 +339,20 @@ class ToolDrivenAgentLoop:
                 else:
                     # LLM 输出文本（可能是最终报告）
                     content = response["content"]
+                    reasoning = response.get("reasoning")  # 获取模型思考过程
+                    
                     self.state.messages.append({"role": "assistant", "content": content})
                     
-                    # 发送思考事件
-                    await self.emit_event("llm_thinking", {
-                        "thinking": content[:500] + ("..." if len(content) > 500 else ""),
-                        "is_real": True,
-                        "iteration": self.state.iteration,
-                        "duration": iteration_duration
-                    })
+                    # 只在有模型原生思考过程时才发送思考事件（避免与 content 重复）
+                    if reasoning:
+                        await self.emit_event("llm_thinking", {
+                            "thinking": reasoning[:500] + ("..." if len(reasoning) > 500 else ""),
+                            "is_real": True,
+                            "is_reasoning": True,
+                            "iteration": self.state.iteration,
+                            "duration": iteration_duration
+                        })
+                        logger.info(f"[ToolDrivenAgent] 🧠 模型思考: {reasoning[:200]}...")
                     
                     # 检查是否完成
                     if self._is_complete(content):
@@ -449,17 +454,20 @@ class ToolDrivenAgentLoop:
         arguments = response["arguments"]
         tool_call_id = response.get("tool_call_id", f"call_{self.state.iteration}")
         content = response.get("content", "")
+        reasoning = response.get("reasoning")  # 获取模型思考过程
         
         logger.info(f"[ToolDrivenAgent] 工具调用: {tool_name}")
         
-        # 如果有思考内容，发送事件
-        if content:
+        # 只在有模型原生思考过程时才发送思考事件（避免与 content 重复）
+        if reasoning:
             await self.emit_event("llm_thinking", {
-                "thinking": content[:300] + ("..." if len(content) > 300 else ""),
+                "thinking": reasoning[:500] + ("..." if len(reasoning) > 500 else ""),
                 "is_real": True,
+                "is_reasoning": True,
                 "iteration": self.state.iteration,
                 "duration": iteration_duration
             })
+            logger.info(f"[ToolDrivenAgent] 🧠 模型思考: {reasoning[:200]}...")
         
         await self.emit_event("tool_call", {
             "tool": tool_name,

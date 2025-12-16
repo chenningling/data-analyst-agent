@@ -135,6 +135,49 @@ class LLMClient:
         if extra_params:
             logger.info(f"[LLM] 额外参数: {extra_params}")
     
+    def _extract_reasoning(self, message) -> Optional[str]:
+        """
+        从模型响应中提取思考过程
+        
+        支持多种字段名（不同模型可能使用不同的字段）：
+        - reasoning_content: DeepSeek-R1 等模型
+        - reasoning: 通用字段名
+        - thinking_content: 某些模型
+        - thinking: 某些模型
+        - reason: 某些模型
+        """
+        # 可能的思考过程字段名列表
+        reasoning_fields = [
+            'reasoning_content',
+            'reasoning',
+            'thinking_content', 
+            'thinking',
+            'reason',
+            'thought',
+            'chain_of_thought'
+        ]
+        
+        # 尝试从 message 对象中提取
+        for field in reasoning_fields:
+            if hasattr(message, field):
+                value = getattr(message, field)
+                if value:
+                    return str(value)
+        
+        # 尝试从 message 的 __dict__ 中提取（某些模型可能使用动态属性）
+        if hasattr(message, '__dict__'):
+            for field in reasoning_fields:
+                if field in message.__dict__ and message.__dict__[field]:
+                    return str(message.__dict__[field])
+        
+        # 尝试从 message 作为字典访问（某些 API 可能返回字典）
+        if isinstance(message, dict):
+            for field in reasoning_fields:
+                if field in message and message[field]:
+                    return str(message[field])
+        
+        return None
+    
     def _log_response(self, response_type: str, result: Dict[str, Any], duration: float):
         """记录响应日志"""
         logger.info(f"[LLM] --- 输出响应 ---")
@@ -220,6 +263,11 @@ class LLMClient:
             if hasattr(response, 'usage') and response.usage:
                 logger.info(f"[LLM] Token 使用: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, total={response.usage.total_tokens}")
             
+            # 提取模型的思考过程（支持多种字段名）
+            reasoning = self._extract_reasoning(message)
+            if reasoning:
+                logger.info(f"[LLM] 🧠 模型思考过程: {reasoning[:200]}...")
+            
             # 构建原始响应数据用于日志
             raw_response_data = {
                 "id": response.id if hasattr(response, 'id') else None,
@@ -228,7 +276,8 @@ class LLMClient:
                     "index": response.choices[0].index if hasattr(response.choices[0], 'index') else 0,
                     "message": {
                         "role": message.role,
-                        "content": message.content
+                        "content": message.content,
+                        "reasoning": reasoning  # 记录思考过程
                     },
                     "finish_reason": response.choices[0].finish_reason if hasattr(response.choices[0], 'finish_reason') else None
                 }]
@@ -255,7 +304,8 @@ class LLMClient:
                     "tool_call_id": tool_call.id,
                     "name": tool_call.function.name,
                     "arguments": json.loads(tool_call.function.arguments),
-                    "content": message.content or ""  # 保留文本内容（LLM 可能同时输出文本和工具调用）
+                    "content": message.content or "",  # 保留文本内容
+                    "reasoning": reasoning  # 添加思考过程
                 }
                 self._log_response("tool_call", result, duration)
                 
@@ -267,7 +317,8 @@ class LLMClient:
             # 普通文本响应
             result = {
                 "type": "response",
-                "content": message.content or ""
+                "content": message.content or "",
+                "reasoning": reasoning  # 添加思考过程
             }
             self._log_response("response", result, duration)
             
