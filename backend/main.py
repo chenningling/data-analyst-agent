@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from agent import AgentLoop, AutonomousAgentLoop
+from agent import AgentLoop, AutonomousAgentLoop, HybridAgentLoop
 from config.settings import settings
 from utils.logger import logger, SessionLogger
 
@@ -277,8 +277,15 @@ async def start_analysis(
     agent_mode = settings.AGENT_MODE
     logger.info(f"[API] Agent 模式: {agent_mode}")
     
-    if agent_mode == "autonomous":
-        # 自主循环模式
+    if agent_mode == "hybrid":
+        # 混合模式（推荐）：代码控制任务流程 + LLM 自主执行
+        agent = HybridAgentLoop(
+            dataset_path=str(dataset_path),
+            user_request=user_request,
+            event_callback=event_callback
+        )
+    elif agent_mode == "autonomous":
+        # 自主循环模式：LLM 完全自主决策
         agent = AutonomousAgentLoop(
             dataset_path=str(dataset_path),
             user_request=user_request,
@@ -389,7 +396,13 @@ async def start_analysis_sync(
     # 根据配置选择 Agent 模式
     agent_mode = settings.AGENT_MODE
     
-    if agent_mode == "autonomous":
+    if agent_mode == "hybrid":
+        agent = HybridAgentLoop(
+            dataset_path=str(dataset_path),
+            user_request=user_request,
+            event_callback=event_callback
+        )
+    elif agent_mode == "autonomous":
         agent = AutonomousAgentLoop(
             dataset_path=str(dataset_path),
             user_request=user_request,

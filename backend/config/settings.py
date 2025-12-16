@@ -26,7 +26,13 @@ class Settings(BaseSettings):
     max_iterations: int = Field(default=20, alias="MAX_ITERATIONS")
     code_timeout: int = Field(default=30, alias="CODE_TIMEOUT")
     max_history_items: int = Field(default=30, alias="MAX_HISTORY_ITEMS")
-    agent_mode: str = Field(default="autonomous", alias="AGENT_MODE")  # "autonomous" 或 "staged"
+    # Agent 运行模式：
+    # - "hybrid": 混合模式（推荐）- 代码控制任务流程 + LLM 自主执行
+    # - "autonomous": 自主模式 - LLM 完全自主决策
+    # - "staged": 分阶段模式 - 传统的明确阶段划分
+    agent_mode: str = Field(default="hybrid", alias="AGENT_MODE")
+    # 每个任务最大迭代次数（仅 hybrid 模式使用）
+    max_iterations_per_task: int = Field(default=5, alias="MAX_ITERATIONS_PER_TASK")
     
     # 文件配置
     upload_dir: str = Field(default="/tmp/data_analyst_uploads", alias="UPLOAD_DIR")
@@ -75,6 +81,10 @@ class Settings(BaseSettings):
     @property
     def AGENT_MODE(self) -> str:
         return self.agent_mode
+    
+    @property
+    def MAX_ITERATIONS_PER_TASK(self) -> int:
+        return self.max_iterations_per_task
 
 
 settings = Settings()

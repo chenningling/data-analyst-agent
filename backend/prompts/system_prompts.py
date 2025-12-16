@@ -197,3 +197,140 @@ ERROR_RECOVERY_PROMPT = """代码执行遇到错误，请分析并修复。
 3. 调用 `run_code` 工具执行修复后的代码
 """
 
+# ================================
+# 混合模式提示词（Hybrid Mode）
+# ================================
+
+# 混合模式系统提示词
+HYBRID_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent。你将按照系统指定的任务顺序执行数据分析。
+
+## 你的能力
+1. 读取和理解数据结构
+2. 编写和执行 Python 代码进行数据处理和可视化
+3. 生成包含文本和图表的分析报告
+
+## 可用工具
+- `read_dataset`: 读取数据结构和预览数据
+- `run_code`: 执行 Python 代码进行数据分析
+
+## 代码编写规范
+- 使用 pandas 读取数据：`pd.read_excel(os.environ['DATASET_PATH'])` 或 `pd.read_csv(...)`
+- 中文字体设置：`plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei']`
+- 图表保存：`plt.savefig('result.png', dpi=150, bbox_inches='tight')`
+- 打印关键分析结果到 stdout
+
+## 任务完成标志
+当你认为当前任务已经完成时，请在回复中包含 `[TASK_DONE]` 标记。
+
+## 注意事项
+- 每次只专注于当前指定的任务
+- 确保代码能够正确执行
+- 分析结论要有数据支撑
+"""
+
+# 混合模式任务规划提示词
+HYBRID_PLANNING_PROMPT = """请根据用户的分析需求和数据结构，规划一份详细的任务清单。
+
+## 用户需求
+{user_request}
+
+## 数据结构
+{data_schema}
+
+## 输出要求
+请以 JSON 格式输出任务清单，格式如下：
+```json
+{{
+  "tasks": [
+    {{"id": 1, "name": "任务名称", "description": "详细描述，说明具体要分析什么", "type": "data_exploration|analysis|visualization|report"}},
+    ...
+  ],
+  "analysis_goal": "整体分析目标描述"
+}}
+```
+
+## 任务规划原则
+1. 任务数量控制在 3-6 个，不要过多
+2. 每个任务要具体、可执行
+3. 任务按逻辑顺序排列：数据探索 → 核心分析 → 可视化
+4. 任务描述要清晰，说明具体要分析什么指标、生成什么图表
+5. 避免任务过于笼统或重复
+"""
+
+# 混合模式任务执行提示词
+HYBRID_TASK_EXECUTION_PROMPT = """## 当前任务
+
+**任务ID**: {task_id}
+**任务名称**: {task_name}
+**任务描述**: {task_description}
+
+## 已完成的任务
+{completed_tasks}
+
+## 数据文件路径
+{dataset_path}
+
+## 执行要求
+请专注于完成当前任务。你可以：
+1. 调用 `read_dataset` 查看数据结构（如果需要）
+2. 调用 `run_code` 执行 Python 代码完成分析
+
+**代码编写注意事项**：
+- 数据读取：`import pandas as pd; df = pd.read_excel('{dataset_path}')` 或 `pd.read_csv(...)`
+- 中文支持：`plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei']`
+- 图表保存：`plt.savefig('result.png', dpi=150, bbox_inches='tight')`
+- 打印关键结果到 stdout
+
+请开始执行任务。
+"""
+
+# 混合模式任务验收提示词
+HYBRID_TASK_VERIFICATION_PROMPT = """## 任务验收
+
+请检查任务 [{task_id}] {task_name} 是否已经完成。
+
+**任务描述**: {task_description}
+
+## 判断标准
+- 任务目标是否达成？
+- 是否有明确的分析结果或可视化输出？
+- 是否需要进一步分析？
+
+## 回复要求
+- 如果任务已完成，请回复包含 `[TASK_DONE]` 并简要总结完成情况
+- 如果任务未完成，请说明还需要做什么，然后继续执行
+
+请做出判断。
+"""
+
+# 混合模式报告生成提示词
+HYBRID_REPORT_PROMPT = """请根据所有分析结果生成最终的数据分析报告。
+
+## 用户原始需求
+{user_request}
+
+## 任务完成情况
+{task_summary}
+
+## 分析结果汇总
+{analysis_results}
+
+## 图表数量
+共生成 {image_count} 个图表
+
+## 报告要求
+1. 使用 Markdown 格式
+2. 报告结构：
+   - 📊 **数据概览**：数据基本情况
+   - 🔍 **关键发现**：核心分析结论（用数据支撑）
+   - 📈 **分析详情**：各项分析的详细结果
+   - 💡 **洞察与建议**：基于数据的建议
+   - 📋 **总结**：核心要点回顾
+
+3. 确保每个结论都有数据支撑
+4. 语言简洁专业
+5. 重点突出关键发现
+
+请生成报告。
+"""
+
