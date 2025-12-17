@@ -135,6 +135,20 @@ export function useWebSocket(sessionId: string | null, options: UseWebSocketOpti
               case 'llm_thinking':
                 console.log('[WebSocket]   └─ LLM 思考:', data.payload.action, data.payload.thinking?.toString().slice(0, 50))
                 break
+              // 新增流式事件处理
+              case 'llm_start':
+                console.log('[WebSocket]   └─ LLM 开始思考, 迭代:', data.payload.iteration)
+                break
+              case 'llm_streaming':
+                // 流式事件不打印完整内容，只打印类型
+                console.log('[WebSocket]   └─ LLM 流式输出:', data.payload.type, '长度:', (data.payload.full_content as string)?.length || 0)
+                break
+              case 'llm_tool_calling':
+                console.log('[WebSocket]   └─ LLM 准备调用工具:', data.payload.tool)
+                break
+              case 'llm_complete':
+                console.log('[WebSocket]   └─ LLM 思考完成, 耗时:', data.payload.duration, '秒')
+                break
               default:
                 console.log('[WebSocket]   └─ payload:', JSON.stringify(data.payload).slice(0, 100))
             }

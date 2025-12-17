@@ -41,6 +41,11 @@ const eventIcons: Record<string, React.ComponentType<{ className?: string }>> = 
   tasks_planned: FileText,
   tasks_updated: FileText,
   llm_thinking: Brain,
+  // 新增流式事件图标
+  llm_start: Brain,
+  llm_streaming: Brain,
+  llm_tool_calling: Terminal,
+  llm_complete: CheckCircle,
 }
 
 const eventColors: Record<string, string> = {
@@ -62,6 +67,11 @@ const eventColors: Record<string, string> = {
   tasks_planned: 'text-purple-400',
   tasks_updated: 'text-emerald-400',
   llm_thinking: 'text-violet-400',
+  // 新增流式事件颜色
+  llm_start: 'text-blue-400',
+  llm_streaming: 'text-violet-400',
+  llm_tool_calling: 'text-yellow-400',
+  llm_complete: 'text-green-400',
 }
 
 const phaseLabels: Record<string, string> = {
@@ -94,6 +104,8 @@ function hasExpandableContent(event: AgentEvent): boolean {
       return !!(payload.tasks)
     case 'tasks_updated':
       return !!(payload.tasks)
+    case 'llm_streaming':
+      return !!(payload.full_content)
     default:
       return false
   }
@@ -103,15 +115,43 @@ export function AgentProcess({ events, isConnected }: AgentProcessProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   // 记录每个事件的展开状态，默认最新的展开，历史的收起
   const [expandedEvents, setExpandedEvents] = useState<Set<number>>(new Set())
+  // 流式内容状态
+  const [streamingContent, setStreamingContent] = useState<string>('')
+  const [streamingType, setStreamingType] = useState<'content' | 'reasoning'>('content')
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [currentIteration, setCurrentIteration] = useState(0)
+  
+  // 处理流式事件
+  useEffect(() => {
+    if (events.length === 0) return
+    
+    const lastEvent = events[events.length - 1]
+    
+    if (lastEvent.type === 'llm_start') {
+      // 开始新的 LLM 调用，重置流式状态
+      setStreamingContent('')
+      setIsStreaming(true)
+      setCurrentIteration(lastEvent.payload.iteration as number)
+    } else if (lastEvent.type === 'llm_streaming') {
+      // 更新流式内容
+      setStreamingContent(lastEvent.payload.full_content as string || '')
+      setStreamingType(lastEvent.payload.type as 'content' | 'reasoning' || 'content')
+      setIsStreaming(true)
+    } else if (lastEvent.type === 'llm_complete' || lastEvent.type === 'tool_call' || lastEvent.type === 'tool_result') {
+      // LLM 调用完成，停止流式显示
+      setIsStreaming(false)
+    }
+  }, [events])
   
   // 当事件更新时，自动展开最新的事件
   useEffect(() => {
     if (events.length > 0) {
       const lastIndex = events.length - 1
-      // 只展开最新的可展开事件
-      if (hasExpandableContent(events[lastIndex])) {
+      // 只展开最新的可展开事件（排除流式事件）
+      const lastEvent = events[lastIndex]
+      if (hasExpandableContent(lastEvent) && lastEvent.type !== 'llm_streaming') {
         setExpandedEvents(new Set([lastIndex]))
-      } else {
+      } else if (lastEvent.type !== 'llm_streaming') {
         setExpandedEvents(new Set())
       }
     }
@@ -148,24 +188,64 @@ export function AgentProcess({ events, isConnected }: AgentProcessProps) {
     )
   }
 
+  // 过滤掉重复的流式事件，只保留最后一个
+  const filteredEvents = events.filter((event, index) => {
+    // 如果是流式事件，只保留最后一个相同迭代的流式事件
+    if (event.type === 'llm_streaming') {
+      const nextEvent = events[index + 1]
+      // 如果下一个也是同迭代的流式事件，跳过当前的
+      if (nextEvent && nextEvent.type === 'llm_streaming' && 
+          nextEvent.payload.iteration === event.payload.iteration) {
+        return false
+      }
+    }
+    return true
+  })
+
   return (
     <div 
       ref={containerRef}
       className="space-y-2 max-h-[600px] overflow-y-auto pr-2"
     >
-      {events.map((event, index) => (
+      {filteredEvents.map((event, index) => (
         <ProcessEvent 
-          key={index} 
+          key={`${event.type}-${event.timestamp}-${index}`} 
           event={event} 
           index={index}
           isExpanded={expandedEvents.has(index)}
           onToggle={() => toggleExpand(index)}
-          isLatest={index === events.length - 1}
+          isLatest={index === filteredEvents.length - 1}
         />
       ))}
       
+      {/* 流式输出实时显示区域 */}
+      {isStreaming && streamingContent && (
+        <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 animate-pulse-slow">
+          <div className="flex items-start gap-3 p-3">
+            <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
+              <div className="w-2 h-2 rounded-full bg-violet-400 animate-ping" />
+            </div>
+            <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center bg-violet-500/20">
+              <Brain className="w-4 h-4 text-violet-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-sm font-medium text-violet-400">
+                  🧠 {streamingType === 'reasoning' ? 'Agent 思考中...' : 'Agent 输出中...'}
+                </span>
+                <span className="text-xs text-muted-foreground">迭代 #{currentIteration}</span>
+              </div>
+              <div className="text-sm text-violet-200 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+                {streamingContent}
+                <span className="inline-block w-2 h-4 bg-violet-400 animate-pulse ml-1" />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* 处理中指示器 */}
-      {isConnected && !events.some(e => e.type === 'agent_completed' || e.type === 'agent_error') && (
+      {isConnected && !isStreaming && !events.some(e => e.type === 'agent_completed' || e.type === 'agent_error') && (
         <div className="flex items-center gap-2 p-3 rounded-lg bg-primary/10 border border-primary/30 animate-pulse">
           <div className="w-2 h-2 rounded-full bg-primary animate-ping" />
           <span className="text-sm text-primary">处理中...</span>
@@ -177,19 +257,19 @@ export function AgentProcess({ events, isConnected }: AgentProcessProps) {
 
 interface ProcessEventProps {
   event: AgentEvent
-  index: number
+  index?: number
   isExpanded: boolean
   onToggle: () => void
   isLatest: boolean
 }
 
-function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessEventProps) {
+function ProcessEvent({ event, isExpanded, onToggle, isLatest }: ProcessEventProps) {
   const Icon = eventIcons[event.type] || Terminal
   const color = eventColors[event.type] || 'text-muted-foreground'
   const payload = event.payload
   const canExpand = hasExpandableContent(event)
 
-  const renderSummary = () => {
+  const renderSummary = (): React.ReactNode => {
     switch (event.type) {
       case 'connected':
         return '🔗 WebSocket 连接成功'
@@ -198,30 +278,30 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
         return '🚀 Agent 开始执行'
       
       case 'phase_change':
-        return phaseLabels[payload.phase as string] || `阶段: ${payload.phase}`
+        return phaseLabels[payload.phase as string] || `阶段: ${String(payload.phase)}`
       
       case 'llm_thinking':
         return (
           <span className="text-violet-300">
-            🧠 {payload.action as string}
-            {payload.duration && <span className="text-xs ml-2 text-muted-foreground">({(payload.duration as number).toFixed(1)}s)</span>}
+            🧠 {String(payload.action || '')}
+            {payload.duration ? <span className="text-xs ml-2 text-muted-foreground">({Number(payload.duration).toFixed(1)}s)</span> : null}
           </span>
         )
       
       case 'code_generated':
-        return `生成代码: ${payload.description || '任务 #' + payload.task_id}`
+        return `生成代码: ${String(payload.description || '任务 #' + payload.task_id)}`
       
       case 'image_generated':
-        return `生成图表: 任务 #${payload.task_id}`
+        return `生成图表: 任务 #${String(payload.task_id)}`
       
       case 'tool_call':
-        return `调用工具: ${payload.tool}`
+        return `调用工具: ${String(payload.tool)}`
       
       case 'tool_result':
         return (
           <span className={payload.status === 'success' ? 'text-green-400' : 'text-destructive'}>
-            {payload.tool}: {payload.status}
-            {payload.has_image && <span className="text-xs text-pink-400 ml-2">📷 包含图表</span>}
+            {String(payload.tool)}: {String(payload.status)}
+            {payload.has_image ? <span className="text-xs text-pink-400 ml-2">📷 包含图表</span> : null}
           </span>
         )
       
@@ -238,32 +318,54 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
         return `数据集: ${(payload.statistics as Record<string, number>)?.total_rows || 0} 行 × ${(payload.statistics as Record<string, number>)?.total_columns || 0} 列`
       
       case 'task_started':
-        return `开始执行: ${payload.task_name}`
+        return `开始执行: ${String(payload.task_name)}`
       
       case 'task_completed':
-        return `✅ 完成: ${payload.task_name}`
+        return `✅ 完成: ${String(payload.task_name)}`
       
       case 'task_failed':
-        return `❌ 失败: ${payload.task_name}`
+        return `❌ 失败: ${String(payload.task_name)}`
       
       case 'report_generated':
         return '✨ 报告生成完成'
       
       case 'log':
-        return payload.message as string
+        return String(payload.message || '')
       
       case 'agent_completed':
         return '🎉 分析完成！'
       
       case 'agent_error':
-        return `❌ 错误: ${payload.error}`
+        return `❌ 错误: ${String(payload.error)}`
+      
+      // 新增流式事件
+      case 'llm_start':
+        return `🚀 开始第 ${String(payload.iteration)} 次思考`
+      
+      case 'llm_streaming': {
+        const streamType = payload.type === 'reasoning' ? '思考' : '输出'
+        const fullContent = String(payload.full_content || '')
+        const contentPreview = fullContent.slice(0, 50)
+        return `💭 ${streamType}中: ${contentPreview}${fullContent.length > 50 ? '...' : ''}`
+      }
+      
+      case 'llm_tool_calling':
+        return `🔧 准备调用: ${String(payload.tool)}`
+      
+      case 'llm_complete':
+        return (
+          <span className="text-green-400">
+            ✅ 第 {String(payload.iteration)} 次思考完成
+            <span className="text-xs ml-2 text-muted-foreground">({Number(payload.duration || 0).toFixed(1)}s)</span>
+          </span>
+        )
       
       default:
         return event.type.replace(/_/g, ' ')
     }
   }
 
-  const renderExpandedContent = () => {
+  const renderExpandedContent = (): React.ReactNode => {
     if (!canExpand || !isExpanded) return null
 
     switch (event.type) {
@@ -271,30 +373,30 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
         return (
           <div className="mt-2 p-3 bg-violet-500/10 rounded-lg border border-violet-500/20">
             {/* 区分真实思考 vs 系统生成 */}
-            {payload.is_real && (
+            {payload.is_real ? (
               <div className="text-xs text-violet-400 mb-2 flex items-center gap-1">
                 <span className="inline-block w-2 h-2 rounded-full bg-violet-400 animate-pulse"></span>
                 Agent 思考中...
               </div>
-            )}
+            ) : null}
             <p className="text-sm text-violet-200 whitespace-pre-wrap">
-              {payload.thinking as string}
+              {String(payload.thinking || '')}
             </p>
-            {payload.input_summary && (
+            {payload.input_summary ? (
               <p className="text-xs text-muted-foreground mt-2">
-                输入: {payload.input_summary as string}
+                输入: {String(payload.input_summary)}
               </p>
-            )}
-            {payload.output_summary && (
+            ) : null}
+            {payload.output_summary ? (
               <p className="text-xs text-muted-foreground mt-1">
-                输出: {payload.output_summary as string}
+                输出: {String(payload.output_summary)}
               </p>
-            )}
-            {payload.iteration && (
+            ) : null}
+            {payload.iteration ? (
               <p className="text-xs text-muted-foreground mt-1">
-                迭代: #{payload.iteration as number}
+                迭代: #{String(payload.iteration)}
               </p>
-            )}
+            ) : null}
           </div>
         )
       
@@ -321,18 +423,18 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
         )
       
       case 'tool_call':
-        return payload.arguments && (
+        return payload.arguments ? (
           <pre className="mt-2 text-xs text-muted-foreground bg-secondary/50 p-3 rounded-lg overflow-x-auto">
             {JSON.stringify(payload.arguments, null, 2)}
           </pre>
-        )
+        ) : null
       
       case 'tool_result':
-        return payload.stdout_preview && (
+        return payload.stdout_preview ? (
           <pre className="mt-2 text-xs text-muted-foreground bg-secondary/50 p-3 rounded-lg overflow-x-auto max-h-40">
-            {payload.stdout_preview}
+            {String(payload.stdout_preview)}
           </pre>
-        )
+        ) : null
       
       case 'data_explored':
         return (
@@ -344,11 +446,11 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
       case 'tasks_planned':
         return (
           <div className="mt-2 space-y-1">
-            {payload.analysis_goal && (
+            {payload.analysis_goal ? (
               <p className="text-sm text-muted-foreground mb-2">
-                目标: {payload.analysis_goal as string}
+                目标: {String(payload.analysis_goal)}
               </p>
-            )}
+            ) : null}
             <div className="text-xs space-y-1">
               {(payload.tasks as Array<{id: number, name: string, type: string}>)?.map((task, i) => (
                 <div key={i} className="flex items-center gap-2 text-muted-foreground">
@@ -383,6 +485,15 @@ function ProcessEvent({ event, index, isExpanded, onToggle, isLatest }: ProcessE
                 </div>
               ))}
             </div>
+          </div>
+        )
+      
+      case 'llm_streaming':
+        return (
+          <div className="mt-2 p-3 bg-violet-500/10 rounded-lg border border-violet-500/20">
+            <p className="text-sm text-violet-200 whitespace-pre-wrap">
+              {String(payload.full_content || '')}
+            </p>
           </div>
         )
       

@@ -5,24 +5,32 @@ LLM 客户端模块 - 封装大模型调用
 - 封装 OpenAI API 调用
 - 详细的输入/输出日志记录
 - 支持 Function Calling
+- 支持流式输出（Streaming）
 - 完整的请求/响应 JSON 记录（保存到 record 文件夹）
 """
 import json
 import os
 import time
+import asyncio
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from openai import OpenAI
+from typing import List, Dict, Any, Optional, Callable, Awaitable
+from openai import OpenAI, AsyncOpenAI
 
 from config.settings import settings
 from utils.logger import logger
 
 
 class LLMClient:
-    """大模型客户端封装（带详细日志）"""
+    """大模型客户端封装（带详细日志，支持流式输出）"""
     
     def __init__(self):
+        # 同步客户端（保留兼容性）
         self.client = OpenAI(
+            api_key=settings.LLM_API_KEY,
+            base_url=settings.LLM_BASE_URL
+        )
+        # 异步客户端（用于流式输出）
+        self.async_client = AsyncOpenAI(
             api_key=settings.LLM_API_KEY,
             base_url=settings.LLM_BASE_URL
         )
@@ -47,6 +55,7 @@ class LLMClient:
         
         logger.info(f"[LLM] 客户端初始化: model={self.model}, base_url={settings.LLM_BASE_URL or 'default'}")
         logger.info(f"[LLM] JSON日志文件: {self.log_file_path}")
+        logger.info(f"[LLM] 流式输出: 已启用")
     
     def set_session(self, session_id: str):
         """
@@ -360,6 +369,204 @@ class LLMClient:
             self._log_response("error", result, duration)
             
             # 保存错误日志
+            self._save_json_log(request_data, {"error": str(e), "type": "error"}, None, duration)
+            
+            return result
+    
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        on_content_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_reasoning_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_tool_call_start: Optional[Callable[[str], Awaitable[None]]] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096
+    ) -> Dict[str, Any]:
+        """
+        异步流式聊天请求
+        
+        支持在生成过程中实时回调，实现打字机效果
+        
+        Args:
+            messages: 消息列表
+            tools: 工具定义列表
+            on_content_chunk: 内容块回调（每生成一小段文本就调用）
+            on_reasoning_chunk: 思考过程块回调（如果模型支持）
+            on_tool_call_start: 工具调用开始回调
+            temperature: 温度参数
+            max_tokens: 最大 token 数
+        
+        Returns:
+            包含响应类型和内容的字典
+        """
+        # 记录请求
+        self._log_request(messages, tools, {"temperature": temperature, "max_tokens": max_tokens, "stream": True})
+        
+        start_time = time.time()
+        
+        # 构建请求数据用于日志
+        request_data = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True
+        }
+        if tools:
+            request_data["tools"] = tools
+            request_data["tool_choice"] = "auto"
+        
+        try:
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True
+            }
+            
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            
+            # 使用异步客户端进行流式调用
+            stream = await self.async_client.chat.completions.create(**kwargs)
+            
+            # 收集完整响应
+            full_content = ""
+            full_reasoning = ""
+            tool_calls_data: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, arguments}
+            finish_reason = None
+            
+            # 处理流式响应
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                    
+                choice = chunk.choices[0]
+                delta = choice.delta
+                
+                # 记录结束原因
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+                
+                # 处理思考过程（如果模型支持，如 DeepSeek-R1）
+                reasoning_content = None
+                if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                    reasoning_content = delta.reasoning_content
+                elif hasattr(delta, 'reasoning') and delta.reasoning:
+                    reasoning_content = delta.reasoning
+                
+                if reasoning_content:
+                    full_reasoning += reasoning_content
+                    if on_reasoning_chunk:
+                        await on_reasoning_chunk(reasoning_content)
+                
+                # 处理文本内容
+                if delta.content:
+                    full_content += delta.content
+                    if on_content_chunk:
+                        await on_content_chunk(delta.content)
+                
+                # 处理工具调用（流式中需要拼接）
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        
+                        if idx not in tool_calls_data:
+                            tool_calls_data[idx] = {
+                                "id": "",
+                                "name": "",
+                                "arguments": ""
+                            }
+                        
+                        if tc.id:
+                            tool_calls_data[idx]["id"] = tc.id
+                        
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_data[idx]["name"] = tc.function.name
+                                # 通知工具调用开始
+                                if on_tool_call_start:
+                                    await on_tool_call_start(tc.function.name)
+                            
+                            if tc.function.arguments:
+                                tool_calls_data[idx]["arguments"] += tc.function.arguments
+            
+            duration = time.time() - start_time
+            
+            # 记录 token 使用（流式模式下可能没有）
+            logger.info(f"[LLM] 流式响应完成，耗时: {duration:.2f}秒")
+            
+            # 构建响应数据用于日志
+            raw_response_data = {
+                "model": self.model,
+                "stream": True,
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": full_content,
+                        "reasoning": full_reasoning if full_reasoning else None
+                    },
+                    "finish_reason": finish_reason
+                }]
+            }
+            
+            # 检查是否有工具调用
+            if tool_calls_data:
+                # 取第一个工具调用
+                first_tool = tool_calls_data[0]
+                
+                raw_response_data["choices"][0]["message"]["tool_calls"] = [
+                    {
+                        "id": tc_data["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc_data["name"],
+                            "arguments": tc_data["arguments"]
+                        }
+                    } for tc_data in tool_calls_data.values()
+                ]
+                
+                try:
+                    arguments = json.loads(first_tool["arguments"])
+                except json.JSONDecodeError:
+                    arguments = {}
+                
+                result = {
+                    "type": "tool_call",
+                    "tool_call_id": first_tool["id"],
+                    "name": first_tool["name"],
+                    "arguments": arguments,
+                    "content": full_content,
+                    "reasoning": full_reasoning if full_reasoning else None
+                }
+                
+                self._log_response("tool_call", result, duration)
+                self._save_json_log(request_data, raw_response_data, None, duration)
+                
+                return result
+            
+            # 普通文本响应
+            result = {
+                "type": "response",
+                "content": full_content,
+                "reasoning": full_reasoning if full_reasoning else None
+            }
+            
+            self._log_response("response", result, duration)
+            self._save_json_log(request_data, raw_response_data, None, duration)
+            
+            return result
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            result = {
+                "type": "error",
+                "error": str(e)
+            }
+            self._log_response("error", result, duration)
             self._save_json_log(request_data, {"error": str(e), "type": "error"}, None, duration)
             
             return result

@@ -290,14 +290,15 @@ class ToolDrivenAgentLoop:
     
     async def run(self) -> Dict[str, Any]:
         """
-        运行工具驱动循环
+        运行工具驱动循环（流式版本）
         
         核心逻辑：只发一条消息，让 LLM 自主完成所有工作
+        支持实时流式输出，让前端能看到 Agent 的思考过程
         """
         self.start_time = time.time()
         
         logger.info(f"\n{'*'*60}")
-        logger.info(f"[ToolDrivenAgent] ===== 开始执行 =====")
+        logger.info(f"[ToolDrivenAgent] ===== 开始执行（流式模式）=====")
         logger.info(f"[ToolDrivenAgent] 最大迭代数: {self.max_iterations}")
         logger.info(f"{'*'*60}\n")
         
@@ -305,7 +306,7 @@ class ToolDrivenAgentLoop:
             await self.emit_event("agent_started", {
                 "session_id": self.state.session_id,
                 "user_request": self.user_request,
-                "mode": "tool_driven"
+                "mode": "tool_driven_streaming"
             })
             
             # 只发一条初始消息，让 LLM 自主执行
@@ -323,13 +324,73 @@ class ToolDrivenAgentLoop:
                 
                 iteration_start = time.time()
                 
-                # 调用 LLM
-                response = self.llm.chat(
+                # 通知前端开始新的 LLM 调用
+                await self.emit_event("llm_start", {
+                    "iteration": self.state.iteration,
+                    "message": f"开始第 {self.state.iteration} 次思考..."
+                })
+                
+                # 流式内容缓冲
+                streaming_content = ""
+                streaming_reasoning = ""
+                last_emit_time = time.time()
+                
+                # 流式回调：内容块
+                async def on_content_chunk(chunk: str):
+                    nonlocal streaming_content, last_emit_time
+                    streaming_content += chunk
+                    
+                    # 每隔 100ms 或累积 50 字符发送一次，避免过于频繁
+                    current_time = time.time()
+                    if current_time - last_emit_time > 0.1 or len(chunk) > 50:
+                        await self.emit_event("llm_streaming", {
+                            "content": chunk,
+                            "full_content": streaming_content,
+                            "iteration": self.state.iteration,
+                            "type": "content"
+                        })
+                        last_emit_time = current_time
+                
+                # 流式回调：思考过程
+                async def on_reasoning_chunk(chunk: str):
+                    nonlocal streaming_reasoning, last_emit_time
+                    streaming_reasoning += chunk
+                    
+                    current_time = time.time()
+                    if current_time - last_emit_time > 0.1 or len(chunk) > 50:
+                        await self.emit_event("llm_streaming", {
+                            "content": chunk,
+                            "full_content": streaming_reasoning,
+                            "iteration": self.state.iteration,
+                            "type": "reasoning"
+                        })
+                        last_emit_time = current_time
+                
+                # 流式回调：工具调用开始
+                async def on_tool_call_start(tool_name: str):
+                    await self.emit_event("llm_tool_calling", {
+                        "tool": tool_name,
+                        "iteration": self.state.iteration,
+                        "message": f"准备调用工具: {tool_name}"
+                    })
+                
+                # 使用流式 API 调用 LLM
+                response = await self.llm.chat_stream(
                     self.state.messages,
-                    tools=TOOL_DRIVEN_TOOLS_SCHEMA
+                    tools=TOOL_DRIVEN_TOOLS_SCHEMA,
+                    on_content_chunk=on_content_chunk,
+                    on_reasoning_chunk=on_reasoning_chunk,
+                    on_tool_call_start=on_tool_call_start
                 )
                 
                 iteration_duration = time.time() - iteration_start
+                
+                # 通知前端 LLM 调用完成
+                await self.emit_event("llm_complete", {
+                    "iteration": self.state.iteration,
+                    "duration": iteration_duration,
+                    "type": response["type"]
+                })
                 
                 if response["type"] == "error":
                     logger.error(f"[ToolDrivenAgent] LLM 调用失败: {response['error']}")
@@ -342,12 +403,12 @@ class ToolDrivenAgentLoop:
                 else:
                     # LLM 输出文本（可能是最终报告）
                     content = response["content"]
-                    reasoning = response.get("reasoning")  # 获取模型思考过程
+                    reasoning = response.get("reasoning")
                     
                     self.state.messages.append({"role": "assistant", "content": content})
                     
-                    # 只在有模型原生思考过程时才发送思考事件（避免与 content 重复）
-                    if reasoning:
+                    # 发送最终的思考过程（如果流式中没有发送完整）
+                    if reasoning and reasoning != streaming_reasoning:
                         await self.emit_event("llm_thinking", {
                             "thinking": reasoning[:500] + ("..." if len(reasoning) > 500 else ""),
                             "is_real": True,
