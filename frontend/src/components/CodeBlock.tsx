@@ -58,9 +58,9 @@ export function CodeBlock({
         </button>
       </div>
       
-      {/* 代码内容 */}
-      <div className="overflow-x-auto">
-        <pre className="p-4 text-sm font-mono">
+      {/* 代码内容 - 固定高度，支持滚动 */}
+      <div className="max-h-64 overflow-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+        <pre className="p-4 text-sm font-mono min-w-max">
           <code>
             {lines.map((line, index) => (
               <div key={index} className="flex">

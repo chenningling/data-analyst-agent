@@ -193,13 +193,16 @@ class SessionLogger:
             lines.append(f"  错误: {payload.get('error', 'N/A')}")
         
         elif event_type == "report_generated":
-            report = payload.get("report", "")
+            report = payload.get("report") or ""
             lines.append(f"  报告长度: {len(report)} 字符")
-            lines.append(f"  报告预览:\n{self._indent(report[:500], 4)}...")
+            if report:
+                lines.append(f"  报告预览:\n{self._indent(report[:500], 4)}...")
         
         elif event_type == "agent_completed":
-            lines.append(f"  最终报告长度: {len(payload.get('final_report', ''))} 字符")
-            lines.append(f"  图表数量: {len(payload.get('images', []))}")
+            final_report = payload.get('final_report') or ""
+            images = payload.get('images') or []
+            lines.append(f"  最终报告长度: {len(final_report)} 字符")
+            lines.append(f"  图表数量: {len(images)}")
         
         elif event_type == "agent_error":
             lines.append(f"  错误: {payload.get('error', 'N/A')}")

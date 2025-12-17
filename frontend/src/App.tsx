@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { 
   Sparkles, 
   Upload, 
@@ -8,7 +8,10 @@ import {
   CheckCircle,
   AlertCircle,
   Wifi,
-  WifiOff
+  WifiOff,
+  StopCircle,
+  LayoutList,
+  FileBarChart
 } from 'lucide-react'
 import { Button } from './components/ui/Button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/Card'
@@ -19,7 +22,8 @@ import { ReportViewer } from './components/ReportViewer'
 import { useWebSocket, AgentEvent } from './hooks/useWebSocket'
 import { cn } from './lib/utils'
 
-type AppState = 'idle' | 'uploading' | 'processing' | 'completed' | 'error'
+type AppState = 'idle' | 'uploading' | 'processing' | 'completed' | 'stopped' | 'error'
+type RightPanelTab = 'process' | 'report'
 
 interface AnalysisResult {
   report: string
@@ -40,6 +44,30 @@ function App() {
   const [currentTaskId, setCurrentTaskId] = useState<number | undefined>()
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  
+  // 新增状态
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('process')
+  const [selectedTaskId, setSelectedTaskId] = useState<number | 'planning'>('planning')
+  const [planningStatus, setPlanningStatus] = useState<'pending' | 'in_progress' | 'completed'>('pending')
+
+  // 计算 planningStatus：根据事件判断规划阶段的状态
+  const computePlanningStatus = useCallback((events: AgentEvent[]): 'pending' | 'in_progress' | 'completed' => {
+    // 检查是否有任务列表创建事件（第一次 tasks_updated with source=tool）
+    const hasTasksCreated = events.some(e => 
+      e.type === 'tasks_updated' && e.payload.source === 'tool'
+    )
+    
+    if (hasTasksCreated) return 'completed'
+    
+    // 检查是否已开始（有任何事件）
+    const hasStarted = events.some(e => 
+      e.type === 'data_explored' || e.type === 'llm_streaming' || e.type === 'llm_thinking'
+    )
+    
+    if (hasStarted) return 'in_progress'
+    
+    return 'pending'
+  }, [])
 
   // WebSocket 事件处理
   const handleEvent = useCallback((event: AgentEvent) => {
@@ -51,6 +79,7 @@ function App() {
     switch (type) {
       case 'connected':
         console.log('[App] ✅ WebSocket 连接确认')
+        setPlanningStatus('in_progress')
         break
 
       case 'tasks_planned':
@@ -65,6 +94,11 @@ function App() {
         const updatedTasks = (payload.tasks as Task[]) || []
         console.log(`[App] 🔄 任务状态更新 (来源: ${payload.source}): ${updatedTasks.length} 个任务`)
         updatedTasks.forEach((t, i) => console.log(`[App]   ${t.status === 'completed' ? '✅' : '⏳'} ${t.name}`))
+        
+        // 标记规划阶段完成
+        if (payload.source === 'tool') {
+          setPlanningStatus('completed')
+        }
         
         if (payload.source === 'llm') {
           // LLM 自主更新的任务状态：合并更新
@@ -86,11 +120,19 @@ function App() {
         } else {
           setTasks(updatedTasks)
         }
+        
+        // 更新当前任务ID（找到 in_progress 的任务）
+        const inProgressTask = updatedTasks.find(t => t.status === 'in_progress')
+        if (inProgressTask) {
+          setCurrentTaskId(inProgressTask.id as number)
+          setSelectedTaskId(inProgressTask.id as number)
+        }
         break
 
       case 'task_started':
         console.log(`[App] ▶️ 任务开始: #${payload.task_id} ${payload.task_name}`)
         setCurrentTaskId(payload.task_id as number)
+        setSelectedTaskId(payload.task_id as number)
         setTasks(prev => prev.map(t => 
           t.id === payload.task_id 
             ? { ...t, status: 'in_progress' as const }
@@ -146,6 +188,13 @@ function App() {
         console.log('[App] 🎉 Agent 执行完成!')
         setAppState('completed')
         setCurrentTaskId(undefined)
+        // 检查是否因达到迭代上限而结束
+        if (payload.reached_max_iterations) {
+          console.warn(`[App] ⚠️ 达到最大迭代次数，${payload.incomplete_tasks_count} 个任务未完成`)
+          setError(`分析达到最大迭代次数，${payload.incomplete_tasks_count} 个任务未完成。报告可能不完整。`)
+        }
+        // 自动切换到报告 Tab
+        setRightPanelTab('report')
         if (payload.final_report) {
           setResult(prev => ({
             report: payload.final_report as string,
@@ -154,10 +203,20 @@ function App() {
         }
         break
 
+      case 'agent_warning':
+        console.warn('[App] ⚠️ Agent 警告:', payload.warning)
+        setError(payload.warning as string)
+        break
+
       case 'agent_error':
         console.error('[App] 💥 Agent 错误:', payload.error)
         setAppState('error')
         setError(payload.error as string)
+        break
+
+      case 'agent_stopped':
+        console.log('[App] ⏹️ Agent 已停止')
+        setAppState('stopped')
         break
 
       case 'phase_change':
@@ -209,6 +268,9 @@ function App() {
     setError(null)
     setResult(null)
     setTasks([])
+    setRightPanelTab('process')
+    setSelectedTaskId('planning')
+    setPlanningStatus('pending')
     clearEvents()
 
     const formData = new FormData()
@@ -259,6 +321,28 @@ function App() {
     }
   }
 
+  // 停止分析
+  const handleStopAnalysis = async () => {
+    if (!sessionId) return
+    
+    console.log('[App] ⏹️ 请求停止分析...')
+    
+    try {
+      const response = await fetch(`/api/stop/${sessionId}`, {
+        method: 'POST',
+      })
+      
+      if (response.ok) {
+        console.log('[App] ✅ 停止请求已发送')
+        setAppState('stopped')
+      } else {
+        console.error('[App] ❌ 停止请求失败')
+      }
+    } catch (e) {
+      console.error('[App] ❌ 停止请求出错:', e)
+    }
+  }
+
   // 重置
   const handleReset = () => {
     setAppState('idle')
@@ -269,8 +353,22 @@ function App() {
     setCurrentTaskId(undefined)
     setResult(null)
     setError(null)
+    setRightPanelTab('process')
+    setSelectedTaskId('planning')
+    setPlanningStatus('pending')
     clearEvents()
   }
+
+  // 处理任务点击
+  const handleTaskClick = useCallback((taskId: number | 'planning') => {
+    setSelectedTaskId(taskId)
+  }, [])
+
+  // 实际的 planningStatus 应该根据事件动态计算
+  const actualPlanningStatus = useMemo(() => {
+    if (appState === 'idle' || appState === 'uploading') return 'pending'
+    return computePlanningStatus(events)
+  }, [appState, events, computePlanningStatus])
 
   return (
     <div className="min-h-screen gradient-bg">
@@ -292,6 +390,18 @@ function App() {
           </div>
           
           <div className="flex items-center gap-4">
+            {/* 停止分析按钮 */}
+            {appState === 'processing' && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleStopAnalysis}
+              >
+                <StopCircle className="w-4 h-4 mr-2" />
+                停止分析
+              </Button>
+            )}
+            
             {/* 连接状态 */}
             {sessionId && (
               <div className={cn(
@@ -390,11 +500,17 @@ function App() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <TaskList tasks={tasks} currentTaskId={currentTaskId} />
+                  <TaskList 
+                    tasks={tasks} 
+                    currentTaskId={currentTaskId}
+                    planningStatus={actualPlanningStatus}
+                    onTaskClick={handleTaskClick}
+                    selectedTaskId={selectedTaskId}
+                  />
                 </CardContent>
               </Card>
 
-              {(appState === 'completed' || appState === 'error') && (
+              {(appState === 'completed' || appState === 'error' || appState === 'stopped') && (
                 <Button
                   variant="outline"
                   className="w-full"
@@ -406,19 +522,67 @@ function App() {
             </div>
 
             {/* 右侧：执行过程 & 结果 */}
-            <div className="lg:col-span-2 space-y-6">
-              {/* 执行过程 */}
-              <Card className="glass">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Brain className="w-4 h-4 text-primary" />
-                    Agent 执行过程
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <AgentProcess events={events} isConnected={isConnected} />
-                </CardContent>
-              </Card>
+            <div className="lg:col-span-2 space-y-4">
+              {/* Tab 切换 */}
+              <div className="flex border-b border-border">
+                <button
+                  onClick={() => setRightPanelTab('process')}
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 transition-colors",
+                    rightPanelTab === 'process'
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <LayoutList className="w-4 h-4" />
+                  执行过程
+                </button>
+                <button
+                  onClick={() => setRightPanelTab('report')}
+                  disabled={!result?.report}
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 transition-colors",
+                    rightPanelTab === 'report'
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground",
+                    !result?.report && "opacity-50 cursor-not-allowed"
+                  )}
+                >
+                  <FileBarChart className="w-4 h-4" />
+                  分析报告
+                  {result?.report && (
+                    <span className="px-1.5 py-0.5 text-xs rounded-full bg-green-500/20 text-green-400">
+                      完成
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Tab 内容 */}
+              {rightPanelTab === 'process' ? (
+                <Card className="glass">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Brain className="w-4 h-4 text-primary" />
+                      Agent 执行过程
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <AgentProcess 
+                      events={events} 
+                      isConnected={isConnected}
+                      currentTaskId={selectedTaskId}
+                      onTaskClick={handleTaskClick}
+                    />
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card className="glass">
+                  <CardContent className="pt-6">
+                    <ReportViewer report={result?.report || ''} images={result?.images} />
+                  </CardContent>
+                </Card>
+              )}
 
               {/* 错误信息 */}
               {error && (
@@ -435,11 +599,19 @@ function App() {
                 </Card>
               )}
 
-              {/* 结果展示 */}
-              {result?.report && (
-                <Card className="glass">
+              {/* 停止提示 */}
+              {appState === 'stopped' && (
+                <Card className="border-yellow-500/50 bg-yellow-500/10">
                   <CardContent className="pt-6">
-                    <ReportViewer report={result.report} images={result.images} />
+                    <div className="flex items-start gap-3">
+                      <StopCircle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-medium text-yellow-500">分析已停止</p>
+                        <p className="text-sm text-yellow-500/80 mt-1">
+                          分析过程已被手动停止，已完成的结果已保留。
+                        </p>
+                      </div>
+                    </div>
                   </CardContent>
                 </Card>
               )}
@@ -465,6 +637,7 @@ function StatusBadge({ state }: { state: AppState }) {
     uploading: { icon: Loader2, label: '上传中', className: 'bg-primary/20 text-primary', animate: true },
     processing: { icon: Brain, label: '分析中', className: 'bg-primary/20 text-primary', animate: true },
     completed: { icon: CheckCircle, label: '完成', className: 'bg-green-500/20 text-green-400', animate: false },
+    stopped: { icon: StopCircle, label: '已停止', className: 'bg-yellow-500/20 text-yellow-500', animate: false },
     error: { icon: AlertCircle, label: '错误', className: 'bg-destructive/20 text-destructive', animate: false },
   }
 
@@ -482,4 +655,3 @@ function StatusBadge({ state }: { state: AppState }) {
 }
 
 export default App
-

@@ -1,17 +1,14 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useRef, useMemo } from 'react'
 import { 
-  Play, 
   CheckCircle, 
   XCircle, 
   Database, 
-  FileText, 
   Image as ImageIcon,
-  Zap,
   Terminal,
   Brain,
-  ChevronDown,
-  ChevronRight,
-  Loader2
+  Loader2,
+  Code,
+  AlertTriangle
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CodeBlock } from './CodeBlock'
@@ -20,213 +17,303 @@ import type { AgentEvent } from '@/hooks/useWebSocket'
 interface AgentProcessProps {
   events: AgentEvent[]
   isConnected: boolean
+  currentTaskId?: number | 'planning'
+  onTaskClick?: (taskId: number | 'planning') => void
 }
 
-// 迭代步骤数据结构
-interface IterationStep {
-  iteration: number
-  status: 'thinking' | 'tool_calling' | 'completed' | 'error'
-  thinkingContent: string  // 思考过程（实时更新）
-  outputContent: string    // 输出内容（实时更新）
-  toolCalls: Array<{
-    tool: string
-    arguments?: Record<string, unknown>
-    status?: 'calling' | 'success' | 'error'
-    result?: {
-      stdout?: string
-      hasImage?: boolean
-      code?: string
-      description?: string
-    }
-  }>
-  duration?: number
+// 任务执行分组
+interface TaskExecutionGroup {
+  taskId: number | 'planning'
+  taskName: string
+  status: 'pending' | 'in_progress' | 'completed' | 'failed'
+  events: ProcessedEvent[]
+  startTime?: string
+  endTime?: string
+}
+
+// 处理后的事件（用于显示）
+interface ProcessedEvent {
+  id: string
+  type: 'data_explored' | 'thinking' | 'code' | 'tool_result' | 'image' | 'error'
   timestamp: string
+  data: {
+    // data_explored
+    schema?: Array<{ name: string; dtype: string }>
+    statistics?: { total_rows?: number; total_columns?: number; missing_percentage?: number }
+    // thinking
+    thinking?: string
+    isStreaming?: boolean
+    // code
+    code?: string
+    description?: string
+    // tool_result
+    tool?: string
+    stdout?: string
+    status?: string
+    // image
+    image_base64?: string
+    // error
+    error?: string
+  }
 }
 
-// 将事件列表转换为迭代步骤
-function groupEventsByIteration(events: AgentEvent[]): {
-  iterations: Map<number, IterationStep>
-  otherEvents: AgentEvent[]
-  currentStreaming: { iteration: number; content: string; type: 'reasoning' | 'content' } | null
-} {
-  const iterations = new Map<number, IterationStep>()
-  const otherEvents: AgentEvent[] = []
-  let currentStreaming: { iteration: number; content: string; type: 'reasoning' | 'content' } | null = null
+// 需要过滤的事件类型
+const FILTERED_EVENTS = [
+  'connected',
+  'agent_started', 
+  'phase_change',
+  'llm_start',
+  'llm_complete',
+  'llm_tool_calling',
+  'tasks_planned',
+  'report_generated',
+  'agent_completed',
+]
+
+// 判断事件是否应该显示
+function shouldShowEvent(event: AgentEvent): boolean {
+  // 过滤基础事件
+  if (FILTERED_EVENTS.includes(event.type)) return false
+  
+  // 过滤 todo_write 工具调用
+  if (event.type === 'tool_call' && event.payload.tool === 'todo_write') return false
+  if (event.type === 'tool_result' && event.payload.tool === 'todo_write') return false
+  
+  return true
+}
+
+// 将原始事件转换为处理后的事件
+function processEvent(event: AgentEvent): ProcessedEvent | null {
+  const id = `${event.type}-${event.timestamp}-${Math.random().toString(36).slice(2, 8)}`
+  
+  switch (event.type) {
+    case 'data_explored':
+      return {
+        id,
+        type: 'data_explored',
+        timestamp: event.timestamp,
+        data: {
+          schema: event.payload.schema as ProcessedEvent['data']['schema'],
+          statistics: event.payload.statistics as ProcessedEvent['data']['statistics'],
+        }
+      }
+    
+    case 'llm_streaming':
+      // 只处理 reasoning 类型的流式输出
+      if (event.payload.type === 'reasoning') {
+        return {
+          id,
+          type: 'thinking',
+          timestamp: event.timestamp,
+          data: {
+            thinking: event.payload.full_content as string,
+            isStreaming: true,
+          }
+        }
+      }
+      return null
+    
+    case 'llm_thinking':
+      return {
+        id,
+        type: 'thinking',
+        timestamp: event.timestamp,
+        data: {
+          thinking: event.payload.thinking as string,
+          isStreaming: false,
+        }
+      }
+    
+    case 'code_generated':
+      return {
+        id,
+        type: 'code',
+        timestamp: event.timestamp,
+        data: {
+          code: event.payload.code as string,
+          description: event.payload.description as string,
+        }
+      }
+    
+    case 'tool_call':
+      // 不单独显示 tool_call 事件（等待 tool_result 来显示完整结果）
+      // 只在前端需要即时反馈时显示，这里跳过
+      return null
+    
+    case 'tool_result':
+      if (event.payload.tool !== 'todo_write') {
+        return {
+          id,
+          type: 'tool_result',
+          timestamp: event.timestamp,
+          data: {
+            tool: event.payload.tool as string,
+            stdout: event.payload.stdout_preview as string,
+            status: event.payload.status as string,
+          }
+        }
+      }
+      return null
+    
+    case 'image_generated':
+      return {
+        id,
+        type: 'image',
+        timestamp: event.timestamp,
+        data: {
+          image_base64: event.payload.image_base64 as string,
+        }
+      }
+    
+    case 'agent_error':
+      return {
+        id,
+        type: 'error',
+        timestamp: event.timestamp,
+        data: {
+          error: event.payload.error as string,
+        }
+      }
+    
+    default:
+      return null
+  }
+}
+
+// 将事件按任务分组
+function groupEventsByTask(events: AgentEvent[]): TaskExecutionGroup[] {
+  const groups: TaskExecutionGroup[] = []
+  
+  // 第0步：用户需求分析和任务规划
+  let currentGroup: TaskExecutionGroup = {
+    taskId: 'planning',
+    taskName: '用户需求分析和任务规划',
+    status: 'in_progress',
+    events: [],
+    startTime: events[0]?.timestamp
+  }
+  
+  let taskListCreated = false
   
   for (const event of events) {
-    const iteration = event.payload.iteration as number | undefined
+    // 检测任务列表创建（第一次 tasks_updated 且 source 是 tool）
+    if (event.type === 'tasks_updated' && !taskListCreated) {
+      const source = event.payload.source as string
+      if (source === 'tool') {
+        taskListCreated = true
+        currentGroup.status = 'completed'
+        currentGroup.endTime = event.timestamp
+        groups.push(currentGroup)
+        
+        // 找到第一个 in_progress 的任务
+        const tasks = event.payload.tasks as Array<{ id: number; name: string; status: string }>
+        const firstTask = tasks?.find(t => t.status === 'in_progress') || tasks?.[0]
+        
+        if (firstTask) {
+          currentGroup = {
+            taskId: firstTask.id,
+            taskName: firstTask.name,
+            status: firstTask.status as TaskExecutionGroup['status'],
+            events: [],
+            startTime: event.timestamp
+          }
+        }
+        continue
+      }
+    }
     
-    switch (event.type) {
-      case 'llm_start':
-        if (iteration !== undefined) {
-          iterations.set(iteration, {
-            iteration,
-            status: 'thinking',
-            thinkingContent: '',
-            outputContent: '',
-            toolCalls: [],
-            timestamp: event.timestamp
-          })
+    // 检测任务切换
+    if (event.type === 'tasks_updated' && taskListCreated) {
+      const tasks = event.payload.tasks as Array<{ id: number; name: string; status: string }>
+      
+      // 找到当前 in_progress 的任务
+      const inProgressTask = tasks?.find(t => t.status === 'in_progress')
+      
+      // 检查当前任务是否完成
+      const currentTask = tasks?.find(t => t.id === currentGroup.taskId)
+      if (currentTask && currentTask.status === 'completed' && currentGroup.status !== 'completed') {
+        currentGroup.status = 'completed'
+        currentGroup.endTime = event.timestamp
+      }
+      
+      // 如果有新的 in_progress 任务且不是当前任务
+      if (inProgressTask && inProgressTask.id !== currentGroup.taskId) {
+        // 保存当前组
+        if (currentGroup.events.length > 0 || currentGroup.taskId === 'planning') {
+          groups.push(currentGroup)
         }
-        break
         
-      case 'llm_streaming':
-        if (iteration !== undefined) {
-          const step = iterations.get(iteration)
-          if (step) {
-            const streamType = event.payload.type as 'reasoning' | 'content'
-            const content = String(event.payload.full_content || '')
-            if (streamType === 'reasoning') {
-              step.thinkingContent = content
-            } else {
-              step.outputContent = content
-            }
-            // 记录当前正在流式输出的内容
-            currentStreaming = { iteration, content, type: streamType }
-          }
+        // 创建新组
+        currentGroup = {
+          taskId: inProgressTask.id,
+          taskName: inProgressTask.name,
+          status: 'in_progress',
+          events: [],
+          startTime: event.timestamp
         }
-        break
-        
-      case 'llm_tool_calling':
-        if (iteration !== undefined) {
-          const step = iterations.get(iteration)
-          if (step) {
-            step.status = 'tool_calling'
-            step.toolCalls.push({
-              tool: String(event.payload.tool),
-              status: 'calling'
-            })
-          }
-        }
-        break
-        
-      case 'llm_complete':
-        if (iteration !== undefined) {
-          const step = iterations.get(iteration)
-          if (step) {
-            step.status = 'completed'
-            step.duration = event.payload.duration as number
-          }
-          currentStreaming = null
-        }
-        break
-        
-      case 'tool_call':
-        if (iteration !== undefined) {
-          const step = iterations.get(iteration)
-          if (step) {
-            // 更新或添加工具调用信息
-            const existingCall = step.toolCalls.find(tc => tc.tool === event.payload.tool)
-            if (existingCall) {
-              existingCall.arguments = event.payload.arguments as Record<string, unknown>
-            } else {
-              step.toolCalls.push({
-                tool: String(event.payload.tool),
-                arguments: event.payload.arguments as Record<string, unknown>,
-                status: 'calling'
-              })
+      }
+      continue
+    }
+    
+    // 处理并添加事件到当前组
+    if (shouldShowEvent(event)) {
+      const processed = processEvent(event)
+      if (processed) {
+        // 合并 thinking 事件：避免重复显示相同或相似的思考内容
+        if (processed.type === 'thinking') {
+          const lastEvent = currentGroup.events[currentGroup.events.length - 1]
+          if (lastEvent?.type === 'thinking') {
+            const lastThinking = lastEvent.data.thinking || ''
+            const currentThinking = processed.data.thinking || ''
+            
+            // 如果内容相同，或者新内容是旧内容的扩展，或者旧内容是新内容的前缀，则替换
+            if (currentThinking === lastThinking ||
+                currentThinking.startsWith(lastThinking.slice(0, 50)) ||
+                lastThinking.startsWith(currentThinking.slice(0, 50))) {
+              // 保留更完整的内容
+              if (currentThinking.length >= lastThinking.length) {
+                currentGroup.events[currentGroup.events.length - 1] = processed
+              }
+              continue
             }
           }
-        } else {
-          otherEvents.push(event)
         }
-        break
-        
-      case 'tool_result':
-        if (iteration !== undefined) {
-          const step = iterations.get(iteration)
-          if (step && step.toolCalls.length > 0) {
-            const lastCall = step.toolCalls[step.toolCalls.length - 1]
-            lastCall.status = event.payload.status === 'success' ? 'success' : 'error'
-            lastCall.result = {
-              stdout: event.payload.stdout_preview as string,
-              hasImage: event.payload.has_image as boolean
-            }
-          }
-        } else {
-          otherEvents.push(event)
-        }
-        break
-        
-    case 'code_generated':
-        if (iteration !== undefined) {
-          const step = iterations.get(iteration)
-          if (step && step.toolCalls.length > 0) {
-            const lastCall = step.toolCalls[step.toolCalls.length - 1]
-            lastCall.result = {
-              ...lastCall.result,
-              code: event.payload.code as string,
-              description: event.payload.description as string
-            }
-          }
-        } else {
-          otherEvents.push(event)
-        }
-        break
-        
-    case 'image_generated':
-        // 图片事件单独处理，添加到 otherEvents
-        otherEvents.push(event)
-        break
-        
-    default:
-        // 非迭代相关的事件
-        otherEvents.push(event)
-  }
+        currentGroup.events.push(processed)
+      }
+    }
   }
   
-  return { iterations, otherEvents, currentStreaming }
+  // 添加最后一组
+  if (currentGroup.events.length > 0 || groups.length === 0) {
+    groups.push(currentGroup)
+  }
+  
+  return groups
 }
 
-export function AgentProcess({ events, isConnected }: AgentProcessProps) {
+export function AgentProcess({ events, isConnected, currentTaskId, onTaskClick }: AgentProcessProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [expandedIterations, setExpandedIterations] = useState<Set<number>>(new Set())
-  const [expandedOtherEvents, setExpandedOtherEvents] = useState<Set<number>>(new Set())
+  const taskRefs = useRef<Map<number | 'planning', HTMLDivElement>>(new Map())
   
-  // 解析事件为迭代步骤
-  const { iterations, otherEvents, currentStreaming } = useMemo(
-    () => groupEventsByIteration(events),
-    [events]
-  )
+  // 将事件按任务分组
+  const taskGroups = useMemo(() => groupEventsByTask(events), [events])
   
-  // 自动展开最新的迭代
+  // 自动滚动到当前任务
   useEffect(() => {
-    if (iterations.size > 0) {
-      const maxIteration = Math.max(...iterations.keys())
-      setExpandedIterations(new Set([maxIteration]))
+    if (currentTaskId !== undefined) {
+      const taskRef = taskRefs.current.get(currentTaskId)
+      if (taskRef) {
+        taskRef.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
     }
-  }, [iterations.size])
+  }, [currentTaskId])
 
-  // 自动滚动到底部
+  // 自动滚动到底部（跟踪最新进度）
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight
     }
-  }, [events.length, currentStreaming?.content])
-
-  const toggleIteration = (iteration: number) => {
-    setExpandedIterations(prev => {
-      const next = new Set(prev)
-      if (next.has(iteration)) {
-        next.delete(iteration)
-      } else {
-        next.add(iteration)
-      }
-      return next
-    })
-  }
-
-  const toggleOtherEvent = (index: number) => {
-    setExpandedOtherEvents(prev => {
-      const next = new Set(prev)
-      if (next.has(index)) {
-        next.delete(index)
-      } else {
-        next.add(index)
-      }
-      return next
-    })
-  }
+  }, [events.length])
 
   if (events.length === 0) {
     return (
@@ -240,51 +327,20 @@ export function AgentProcess({ events, isConnected }: AgentProcessProps) {
     )
   }
 
-  // 将迭代步骤转换为数组并按迭代号排序
-  const sortedIterations = Array.from(iterations.values()).sort((a, b) => a.iteration - b.iteration)
-  
-  // 过滤出重要的非迭代事件（排除流式相关事件）
-  const importantOtherEvents = otherEvents.filter(e => 
-    !['llm_start', 'llm_streaming', 'llm_tool_calling', 'llm_complete'].includes(e.type)
-  )
-
   return (
     <div 
       ref={containerRef}
-      className="space-y-3 max-h-[600px] overflow-y-auto pr-2"
+      className="space-y-4 max-h-[700px] overflow-y-auto pr-2"
     >
-      {/* 非迭代事件（如 agent_started, phase_change 等） */}
-      {importantOtherEvents.filter(e => 
-        ['connected', 'agent_started', 'phase_change', 'tasks_planned', 'data_explored'].includes(e.type)
-      ).map((event, index) => (
-        <SimpleEventCard 
-          key={`other-${index}`} 
-          event={event}
-          isExpanded={expandedOtherEvents.has(index)}
-          onToggle={() => toggleOtherEvent(index)}
-        />
-      ))}
-      
-      {/* 迭代步骤卡片 */}
-      {sortedIterations.map((step) => (
-        <IterationCard
-          key={step.iteration}
-          step={step}
-          isExpanded={expandedIterations.has(step.iteration)}
-          onToggle={() => toggleIteration(step.iteration)}
-          isStreaming={currentStreaming?.iteration === step.iteration}
-        />
-      ))}
-      
-      {/* 任务更新、图片生成等事件 */}
-      {importantOtherEvents.filter(e => 
-        ['tasks_updated', 'image_generated', 'report_generated', 'agent_completed', 'agent_error'].includes(e.type)
-      ).map((event, index) => (
-        <SimpleEventCard 
-          key={`result-${index}`} 
-          event={event} 
-          isExpanded={expandedOtherEvents.has(1000 + index)}
-          onToggle={() => toggleOtherEvent(1000 + index)}
+      {taskGroups.map((group) => (
+        <TaskGroupCard
+          key={group.taskId}
+          group={group}
+          isActive={currentTaskId === group.taskId}
+          ref={(el) => {
+            if (el) taskRefs.current.set(group.taskId, el)
+          }}
+          onClick={() => onTaskClick?.(group.taskId)}
         />
       ))}
       
@@ -299,351 +355,283 @@ export function AgentProcess({ events, isConnected }: AgentProcessProps) {
   )
 }
 
-// 迭代步骤卡片组件
-interface IterationCardProps {
-  step: IterationStep
-  isExpanded: boolean
-  onToggle: () => void
-  isStreaming: boolean
+// 任务分组卡片
+interface TaskGroupCardProps {
+  group: TaskExecutionGroup
+  isActive: boolean
+  onClick?: () => void
 }
 
-function IterationCard({ step, isExpanded, onToggle, isStreaming }: IterationCardProps) {
-  const formatTime = (timestamp: string) => {
-    return new Date(timestamp).toLocaleTimeString('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-  }
+import { forwardRef } from 'react'
 
-  const getStatusIcon = () => {
-    switch (step.status) {
-      case 'thinking':
-        return <Brain className="w-4 h-4 text-violet-400 animate-pulse" />
-      case 'tool_calling':
-        return <Terminal className="w-4 h-4 text-yellow-400" />
-      case 'completed':
-        return <CheckCircle className="w-4 h-4 text-green-400" />
-      case 'error':
-        return <XCircle className="w-4 h-4 text-destructive" />
+const TaskGroupCard = forwardRef<HTMLDivElement, TaskGroupCardProps>(
+  ({ group, isActive, onClick }, ref) => {
+    const formatTime = (timestamp?: string) => {
+      if (!timestamp) return ''
+      return new Date(timestamp).toLocaleTimeString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
     }
-  }
 
-  const getStatusText = () => {
-    switch (step.status) {
-      case 'thinking':
-        return '思考中...'
-      case 'tool_calling':
-        return '调用工具中...'
-      case 'completed':
-        return `完成 (${step.duration?.toFixed(1)}s)`
-      case 'error':
-        return '出错'
+    const getStatusIcon = () => {
+      switch (group.status) {
+        case 'in_progress':
+          return <Loader2 className="w-4 h-4 text-primary animate-spin" />
+        case 'completed':
+          return <CheckCircle className="w-4 h-4 text-green-400" />
+        case 'failed':
+          return <XCircle className="w-4 h-4 text-destructive" />
+        default:
+          return <div className="w-4 h-4 rounded-full border-2 border-muted-foreground/30" />
+      }
     }
-  }
 
-  const hasContent = step.thinkingContent || step.outputContent || step.toolCalls.length > 0
+    const getStatusBadge = () => {
+      switch (group.status) {
+        case 'in_progress':
+          return <span className="px-2 py-0.5 text-xs rounded-full bg-primary/20 text-primary">执行中</span>
+        case 'completed':
+          return <span className="px-2 py-0.5 text-xs rounded-full bg-green-500/20 text-green-400">已完成</span>
+        case 'failed':
+          return <span className="px-2 py-0.5 text-xs rounded-full bg-destructive/20 text-destructive">失败</span>
+        default:
+          return <span className="px-2 py-0.5 text-xs rounded-full bg-secondary text-muted-foreground">等待中</span>
+      }
+    }
 
-        return (
-    <div className={cn(
-      "rounded-lg border transition-all duration-200",
-      isStreaming ? "border-violet-500/50 bg-violet-500/5" : "border-border bg-card/50",
-      step.status === 'completed' && "border-green-500/30"
-    )}>
-      {/* 卡片头部 */}
+    return (
       <div 
-        className="flex items-center gap-3 p-3 cursor-pointer hover:bg-card/80"
-        onClick={onToggle}
+        ref={ref}
+        className={cn(
+          "rounded-lg border transition-all duration-200",
+          isActive ? "border-primary/50 bg-primary/5 shadow-lg shadow-primary/10" : "border-border bg-card/50",
+          group.status === 'completed' && "border-green-500/30",
+          group.status === 'failed' && "border-destructive/30",
+          onClick && "cursor-pointer hover:bg-card/80"
+        )}
+        onClick={onClick}
       >
-        <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
-          {hasContent ? (
-            isExpanded ? (
-              <ChevronDown className="w-4 h-4 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="w-4 h-4 text-muted-foreground" />
-            )
-          ) : (
-            <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
-          )}
-        </div>
-        
-        <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center bg-secondary">
-          {getStatusIcon()}
-        </div>
-        
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className={cn(
-              "text-sm font-medium",
-              step.status === 'thinking' && "text-violet-400",
-              step.status === 'tool_calling' && "text-yellow-400",
-              step.status === 'completed' && "text-green-400",
-              step.status === 'error' && "text-destructive"
-            )}>
-              迭代 #{step.iteration} - {getStatusText()}
-            </span>
-            {step.toolCalls.length > 0 && (
+        {/* 卡片头部 */}
+        <div className="flex items-center gap-3 p-4 border-b border-border/50">
+          <div className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-secondary">
+            {getStatusIcon()}
+          </div>
+          
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium text-foreground">
+                {group.taskId === 'planning' ? '📋' : `#${group.taskId}`} {group.taskName}
+              </span>
+              {getStatusBadge()}
+            </div>
+            {group.startTime && (
               <span className="text-xs text-muted-foreground">
-                ({step.toolCalls.map(tc => tc.tool).join(', ')})
+                {formatTime(group.startTime)}
+                {group.endTime && ` - ${formatTime(group.endTime)}`}
               </span>
             )}
           </div>
-          <span className="text-xs text-muted-foreground/50">
-            {formatTime(step.timestamp)}
-          </span>
         </div>
         
-        {isStreaming && (
-          <div className="flex items-center gap-1">
-            <div className="w-2 h-2 rounded-full bg-violet-400 animate-ping" />
-            <span className="text-xs text-violet-400">实时</span>
+        {/* 事件列表 */}
+        {group.events.length > 0 && (
+          <div className="p-4 space-y-3">
+            {group.events.map((event) => (
+              <EventItem key={event.id} event={event} />
+            ))}
+          </div>
+        )}
+        
+        {/* 空状态 */}
+        {group.events.length === 0 && group.status === 'in_progress' && (
+          <div className="p-4 text-center text-muted-foreground text-sm">
+            <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+            准备执行...
           </div>
         )}
       </div>
-      
-      {/* 卡片内容（展开时显示） */}
-      {isExpanded && hasContent && (
-        <div className="px-4 pb-4 space-y-3">
-          {/* 思考过程 */}
-          {step.thinkingContent && (
-            <div className="rounded-lg bg-violet-500/10 border border-violet-500/20 p-3">
-              <div className="flex items-center gap-2 mb-2">
-                <Brain className="w-4 h-4 text-violet-400" />
-                <span className="text-xs font-medium text-violet-400">思考过程</span>
-                {isStreaming && step.status === 'thinking' && (
-                  <span className="inline-block w-2 h-4 bg-violet-400 animate-pulse" />
-                )}
-              </div>
-              <div className="text-sm text-violet-200 whitespace-pre-wrap break-words max-h-96 overflow-y-auto">
-                {step.thinkingContent}
-              </div>
-            </div>
-          )}
-          
-          {/* 输出内容 */}
-          {step.outputContent && (
-            <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-3">
-              <div className="flex items-center gap-2 mb-2">
-                <FileText className="w-4 h-4 text-blue-400" />
-                <span className="text-xs font-medium text-blue-400">输出内容</span>
-              </div>
-              <div className="text-sm text-blue-200 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
-                {step.outputContent}
-              </div>
-            </div>
-          )}
-          
-          {/* 工具调用 */}
-          {step.toolCalls.map((toolCall, index) => (
-            <div key={index} className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-3">
-              <div className="flex items-center gap-2 mb-2">
-                <Terminal className="w-4 h-4 text-yellow-400" />
-                <span className="text-xs font-medium text-yellow-400">
-                  调用工具: {toolCall.tool}
-          </span>
-                {toolCall.status === 'calling' && (
-                  <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />
-                )}
-                {toolCall.status === 'success' && (
-                  <CheckCircle className="w-3 h-3 text-green-400" />
-                )}
-                {toolCall.status === 'error' && (
-                  <XCircle className="w-3 h-3 text-destructive" />
-                )}
-              </div>
-              
-              {/* 代码显示 */}
-              {toolCall.result?.code && (
-                <div className="mt-2">
-                  <CodeBlock 
-                    code={toolCall.result.code} 
-                    language="python"
-                    title={toolCall.result.description || toolCall.tool}
-                  />
-                </div>
-              )}
-              
-              {/* 工具参数（非代码情况） */}
-              {toolCall.arguments && !toolCall.result?.code && (
-                <pre className="text-xs text-muted-foreground bg-secondary/50 p-2 rounded overflow-x-auto max-h-32">
-                  {JSON.stringify(toolCall.arguments, null, 2)}
-                </pre>
-              )}
-              
-              {/* 工具输出 */}
-              {toolCall.result?.stdout && (
-                <div className="mt-2">
-                  <div className="text-xs text-muted-foreground mb-1">输出结果:</div>
-                  <pre className="text-xs text-cyan-300 bg-secondary/50 p-2 rounded overflow-x-auto max-h-40">
-                    {toolCall.result.stdout}
-                  </pre>
-                </div>
-              )}
-              
-              {/* 图片标记 */}
-              {toolCall.result?.hasImage && (
-                <div className="mt-2 text-xs text-pink-400 flex items-center gap-1">
-                  <ImageIcon className="w-3 h-3" />
-                  生成了图表
-                </div>
-              )}
-            </div>
-          ))}
+    )
+  }
+)
+
+TaskGroupCard.displayName = 'TaskGroupCard'
+
+// 单个事件展示
+function EventItem({ event }: { event: ProcessedEvent }) {
+  switch (event.type) {
+    case 'data_explored':
+      return <DataExploredEvent event={event} />
+    case 'thinking':
+      return <ThinkingEvent event={event} />
+    case 'code':
+      return <CodeEvent event={event} />
+    case 'tool_result':
+      return <ToolResultEvent event={event} />
+    case 'image':
+      return <ImageEvent event={event} />
+    case 'error':
+      return <ErrorEvent event={event} />
+    default:
+      return null
+  }
+}
+
+// 数据探索事件
+function DataExploredEvent({ event }: { event: ProcessedEvent }) {
+  const { statistics, schema } = event.data
+  
+  return (
+    <div className="rounded-lg bg-cyan-500/10 border border-cyan-500/20 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Database className="w-4 h-4 text-cyan-400" />
+        <span className="text-sm font-medium text-cyan-400">数据集概览</span>
+      </div>
+      <div className="grid grid-cols-3 gap-4 text-sm">
+        <div>
+          <span className="text-muted-foreground">行数</span>
+          <p className="text-foreground font-medium">{statistics?.total_rows?.toLocaleString() || '-'}</p>
+        </div>
+        <div>
+          <span className="text-muted-foreground">列数</span>
+          <p className="text-foreground font-medium">{statistics?.total_columns || '-'}</p>
+        </div>
+        <div>
+          <span className="text-muted-foreground">缺失值</span>
+          <p className="text-foreground font-medium">{statistics?.missing_percentage?.toFixed(1) || 0}%</p>
+        </div>
+      </div>
+      {schema && schema.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-cyan-500/20">
+          <p className="text-xs text-muted-foreground mb-2">字段列表</p>
+          <div className="flex flex-wrap gap-1">
+            {schema.slice(0, 8).map((col, i) => (
+              <span key={i} className="px-2 py-0.5 text-xs rounded bg-secondary text-muted-foreground">
+                {col.name}
+              </span>
+            ))}
+            {schema.length > 8 && (
+              <span className="px-2 py-0.5 text-xs rounded bg-secondary text-muted-foreground">
+                +{schema.length - 8} 更多
+              </span>
+            )}
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-// 简单事件卡片组件
-interface SimpleEventCardProps {
-  event: AgentEvent
-  isExpanded: boolean
-  onToggle: () => void
+// 思考过程事件
+function ThinkingEvent({ event }: { event: ProcessedEvent }) {
+  const { thinking, isStreaming } = event.data
+  
+  if (!thinking) return null
+  
+  return (
+    <div className="rounded-lg bg-violet-500/10 border border-violet-500/20 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Brain className="w-4 h-4 text-violet-400" />
+        <span className="text-sm font-medium text-violet-400">AI 思考过程</span>
+        {isStreaming && (
+          <span className="inline-block w-2 h-4 bg-violet-400 animate-pulse" />
+        )}
+      </div>
+      {/* 固定高度，可滚动 */}
+      <div className="max-h-48 overflow-y-auto text-sm text-violet-200/80 whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-violet-500/30 scrollbar-track-transparent">
+        {thinking}
+      </div>
+    </div>
+  )
 }
 
-function SimpleEventCard({ event, isExpanded, onToggle }: SimpleEventCardProps) {
-  const payload = event.payload
+// 代码事件
+function CodeEvent({ event }: { event: ProcessedEvent }) {
+  const { code, description } = event.data
   
-  const getIcon = () => {
-    switch (event.type) {
-      case 'connected': return <CheckCircle className="w-4 h-4 text-green-400" />
-      case 'agent_started': return <Play className="w-4 h-4 text-primary" />
-      case 'agent_completed': return <CheckCircle className="w-4 h-4 text-green-400" />
-      case 'agent_error': return <XCircle className="w-4 h-4 text-destructive" />
-      case 'phase_change': return <Zap className="w-4 h-4 text-purple-400" />
-      case 'data_explored': return <Database className="w-4 h-4 text-cyan-400" />
-      case 'tasks_planned': return <FileText className="w-4 h-4 text-purple-400" />
-      case 'tasks_updated': return <FileText className="w-4 h-4 text-emerald-400" />
-      case 'image_generated': return <ImageIcon className="w-4 h-4 text-pink-400" />
-      case 'report_generated': return <FileText className="w-4 h-4 text-green-400" />
-      default: return <Terminal className="w-4 h-4 text-muted-foreground" />
-    }
-  }
-
-  const getSummary = (): string => {
-    switch (event.type) {
-      case 'connected': return '🔗 WebSocket 连接成功'
-      case 'agent_started': return '🚀 Agent 开始执行'
-      case 'agent_completed': return '🎉 分析完成！'
-      case 'agent_error': return `❌ 错误: ${String(payload.error)}`
-      case 'phase_change': return `📍 ${String(payload.phase)}`
-      case 'data_explored': 
-        const stats = payload.statistics as Record<string, number>
-        return `📊 数据集: ${stats?.total_rows || 0} 行 × ${stats?.total_columns || 0} 列`
-      case 'tasks_planned':
-        return `📋 规划了 ${(payload.tasks as unknown[])?.length || 0} 个任务`
-      case 'tasks_updated':
-        const tasks = payload.tasks as Array<{status: string}>
-        const completed = tasks?.filter(t => t.status === 'completed').length || 0
-        return `✅ 任务进度: ${completed}/${tasks?.length || 0}`
-      case 'image_generated':
-        return `🖼️ 生成图表`
-      case 'report_generated':
-        return '✨ 报告生成完成'
-      default:
-        return event.type.replace(/_/g, ' ')
-    }
-  }
-
-  const hasExpandableContent = () => {
-    switch (event.type) {
-      case 'data_explored': return true
-      case 'tasks_planned': return !!(payload.tasks)
-      case 'tasks_updated': return !!(payload.tasks)
-      case 'image_generated': return !!(payload.image_base64)
-      default: return false
-    }
-  }
-
-  const canExpand = hasExpandableContent()
-
-  const formatTime = (timestamp: string) => {
-    return new Date(timestamp).toLocaleTimeString('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-  }
-
+  if (!code) return null
+  
   return (
-    <div className="rounded-lg border border-border bg-card/50">
-      <div 
-        className={cn("flex items-center gap-3 p-3", canExpand && "cursor-pointer hover:bg-card/80")}
-        onClick={canExpand ? onToggle : undefined}
-      >
-        <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
-          {canExpand ? (
-            isExpanded ? (
-              <ChevronDown className="w-4 h-4 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="w-4 h-4 text-muted-foreground" />
-            )
-          ) : (
-            <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
-          )}
-        </div>
-        
-        <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center bg-secondary">
-          {getIcon()}
-        </div>
-        
-        <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium text-foreground">{getSummary()}</span>
-          <div className="text-xs text-muted-foreground/50">{formatTime(event.timestamp)}</div>
-        </div>
+    <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Code className="w-4 h-4 text-yellow-400" />
+        <span className="text-sm font-medium text-yellow-400">
+          {description || '执行代码'}
+        </span>
       </div>
-      
-      {/* 展开内容 */}
-      {isExpanded && canExpand && (
-        <div className="px-4 pb-4">
-          {event.type === 'tasks_planned' && (
-            <div className="space-y-1">
-              {(payload.tasks as Array<{id: number, name: string, type: string}>)?.map((task, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="w-5 h-5 rounded bg-secondary flex items-center justify-center">
-                    {task.id}
-                  </span>
-                  <span>{task.name}</span>
-                  <span className="px-1.5 py-0.5 rounded bg-secondary/50">{task.type}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          
-          {event.type === 'tasks_updated' && (
-            <div className="space-y-1">
-              {(payload.tasks as Array<{id: number, name: string, status: string}>)?.map((task, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs">
-                  <span className={cn(
-                    "w-5 h-5 rounded flex items-center justify-center",
-                    task.status === 'completed' ? "bg-green-500/20 text-green-400" : "bg-secondary text-muted-foreground"
-                  )}>
-                    {task.status === 'completed' ? '✓' : task.id}
-                  </span>
-                  <span className={task.status === 'completed' ? 'text-green-400' : 'text-muted-foreground'}>
-                    {task.name}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          
-          {event.type === 'image_generated' && payload.image_base64 ? (
-            <img
-              src={`data:image/png;base64,${String(payload.image_base64)}`}
-              alt="Generated chart"
-              className="max-w-full rounded-lg border border-border"
-            />
-          ) : null}
-          
-          {event.type === 'data_explored' && (
-            <div className="text-xs text-muted-foreground space-y-1">
-              <p>缺失值: {(payload.statistics as Record<string, number>)?.missing_percentage || 0}%</p>
-            </div>
-          )}
-        </div>
+      <CodeBlock code={code} language="python" />
+    </div>
+  )
+}
+
+// 工具名称中文映射
+const TOOL_NAME_MAP: Record<string, string> = {
+  'run_code': '执行代码',
+  'read_dataset': '读取数据',
+  'todo_write': '更新任务',
+}
+
+// 获取工具中文名称
+function getToolDisplayName(tool?: string): string {
+  if (!tool) return '工具调用'
+  return TOOL_NAME_MAP[tool] || tool
+}
+
+// 工具结果事件
+function ToolResultEvent({ event }: { event: ProcessedEvent }) {
+  const { tool, stdout, status } = event.data
+  const displayName = getToolDisplayName(tool)
+  
+  return (
+    <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Terminal className="w-4 h-4 text-emerald-400" />
+        <span className="text-sm font-medium text-emerald-400">{displayName}</span>
+        {status === 'success' && <CheckCircle className="w-3 h-3 text-green-400" />}
+        {status === 'error' && <XCircle className="w-3 h-3 text-destructive" />}
+      </div>
+      {stdout && (
+        <pre className="max-h-40 overflow-y-auto text-xs text-emerald-200/80 bg-secondary/50 p-2 rounded scrollbar-thin">
+          {stdout}
+        </pre>
       )}
+    </div>
+  )
+}
+
+// 图片事件
+function ImageEvent({ event }: { event: ProcessedEvent }) {
+  const { image_base64 } = event.data
+  
+  if (!image_base64) return null
+  
+  return (
+    <div className="rounded-lg bg-pink-500/10 border border-pink-500/20 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <ImageIcon className="w-4 h-4 text-pink-400" />
+        <span className="text-sm font-medium text-pink-400">生成图表</span>
+      </div>
+      <img
+        src={`data:image/png;base64,${image_base64}`}
+        alt="Generated chart"
+        className="max-w-full rounded-lg border border-border"
+      />
+    </div>
+  )
+}
+
+// 错误事件
+function ErrorEvent({ event }: { event: ProcessedEvent }) {
+  const { error } = event.data
+  
+  return (
+    <div className="rounded-lg bg-destructive/10 border border-destructive/30 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <AlertTriangle className="w-4 h-4 text-destructive" />
+        <span className="text-sm font-medium text-destructive">执行错误</span>
+      </div>
+      <p className="text-sm text-destructive/80">{error}</p>
     </div>
   )
 }

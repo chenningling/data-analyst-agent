@@ -175,7 +175,7 @@ TOOL_DRIVEN_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent，通过�
 ## 完整工作流程
 
 1. **了解数据**：调用 `read_dataset` 读取数据结构
-2. **创建任务清单**：调用 `todo_write`（merge=false）根据用户需求创建任务
+2. **创建任务清单**：调用 `todo_write`（merge=false）根据用户需求创建3-5个任务
 3. **逐个执行任务**（循环执行，直到所有任务完成）：
    - 调用 `todo_write` 标记任务为 in_progress（开始）
    - 执行任务（调用 run_code 或输出分析内容）
@@ -225,6 +225,21 @@ print("分析结果：...")
    - 只有当所有任务都是 completed 状态时，分析才算真正完成
    - 在此之前，即使输出了报告内容，也不会交付给用户
 
+## ⚡ 效率要求
+
+1. **合并状态更新**：可以在一次 todo_write 调用中同时更新多个任务状态
+   - 例如：完成任务1的同时开始任务2
+   ```json
+   {{"todos": [
+     {{"id": "1", "content": "任务1", "status": "completed"}},
+     {{"id": "2", "content": "任务2", "status": "in_progress"}}
+   ], "merge": true}}
+   ```
+
+2. **避免不必要的思考**：每次迭代都会消耗资源，请高效执行
+
+3. **批量处理**：如果多个任务可以并行或连续执行，可以合并处理后再一次性更新状态
+
 ## 报告格式要求
 
 ```markdown
@@ -271,12 +286,15 @@ class ToolDrivenAgentLoop:
         self,
         dataset_path: str,
         user_request: str,
-        event_callback: Callable[[Dict[str, Any]], Awaitable[None]]
+        event_callback: Callable[[Dict[str, Any]], Awaitable[None]],
+        should_stop: Callable[[], bool] = None
     ):
         self.dataset_path = dataset_path
         self.user_request = user_request
         self.event_callback = event_callback
+        self.should_stop = should_stop or (lambda: False)
         self.start_time = None
+        self.stopped = False
         
         # Agent 状态
         self.state = AgentState(
@@ -354,6 +372,12 @@ class ToolDrivenAgentLoop:
             
             # 简单的自主循环
             while self.state.iteration < self.max_iterations:
+                # 停止检查点
+                if self.should_stop():
+                    logger.info(f"[ToolDrivenAgent] ⏹️ 收到停止请求，终止执行")
+                    self.stopped = True
+                    break
+                
                 self.state.iteration += 1
                 
                 logger.info(f"\n[ToolDrivenAgent] ----- 迭代 {self.state.iteration}/{self.max_iterations} -----")
@@ -441,15 +465,13 @@ class ToolDrivenAgentLoop:
                     content = response["content"]
                     reasoning = response.get("reasoning")
                     
-                    # 将 reasoning 拼接到 content 中，保持上下文连贯性
-                    assistant_content = content if content else ""
+                    # 按照 Kimi thinking 模型官方文档，保持原始响应结构
+                    # reasoning_content 作为单独字段保存，不拼接到 content 中
+                    assistant_message = {"role": "assistant", "content": content}
                     if reasoning:
-                        if assistant_content:
-                            assistant_content = f"[思考：{reasoning[:500]}...]\n\n{assistant_content}" if len(reasoning) > 500 else f"[思考：{reasoning}]\n\n{assistant_content}"
-                        else:
-                            assistant_content = f"[思考：{reasoning[:500]}...]" if len(reasoning) > 500 else f"[思考：{reasoning}]"
+                        assistant_message["reasoning_content"] = reasoning
                     
-                    self.state.messages.append({"role": "assistant", "content": assistant_content if assistant_content else content})
+                    self.state.messages.append(assistant_message)
                     
                     # 发送最终的思考过程（如果流式中没有发送完整）
                     if reasoning and reasoning != streaming_reasoning:
@@ -480,17 +502,67 @@ class ToolDrivenAgentLoop:
                         self.state.final_report = self._find_report_in_messages()
                     break
             
-            # 完成
-            self.state.phase = AgentPhase.COMPLETED
-            self.state.completed_at = datetime.utcnow()
+            # 完成或停止
             total_time = time.time() - self.start_time
             
-            logger.info(f"\n{'*'*60}")
-            logger.info(f"[ToolDrivenAgent] ===== 执行完成 =====")
-            logger.info(f"[ToolDrivenAgent] 总耗时: {total_time:.2f}秒")
-            logger.info(f"[ToolDrivenAgent] 总迭代次数: {self.state.iteration}")
-            logger.info(f"[ToolDrivenAgent] 图表数: {len(self.state.images)}")
-            logger.info(f"{'*'*60}\n")
+            if self.stopped:
+                # 用户手动停止
+                self.state.phase = AgentPhase.COMPLETED
+                self.state.completed_at = datetime.utcnow()
+                
+                logger.info(f"\n{'*'*60}")
+                logger.info(f"[ToolDrivenAgent] ===== 用户停止 =====")
+                logger.info(f"[ToolDrivenAgent] 总耗时: {total_time:.2f}秒")
+                logger.info(f"[ToolDrivenAgent] 总迭代次数: {self.state.iteration}")
+                logger.info(f"[ToolDrivenAgent] 图表数: {len(self.state.images)}")
+                logger.info(f"{'*'*60}\n")
+                
+                await self.emit_event("agent_stopped", {
+                    "message": "分析已被用户停止",
+                    "tasks_summary": self.state.get_tasks_summary(),
+                    "iterations": self.state.iteration,
+                    "duration": total_time,
+                    "images": self.state.images
+                })
+                
+                return {
+                    "status": "stopped",
+                    "session_id": self.state.session_id,
+                    "report": self.state.final_report,
+                    "images": self.state.images
+                }
+            
+            # 检查是否因为达到迭代上限而结束（而非正常完成）
+            incomplete_tasks = self._get_incomplete_tasks()
+            reached_max_iterations = self.state.iteration >= self.max_iterations and len(incomplete_tasks) > 0
+            
+            self.state.phase = AgentPhase.COMPLETED
+            self.state.completed_at = datetime.utcnow()
+            
+            if reached_max_iterations:
+                # 达到迭代上限但任务未全部完成
+                logger.warning(f"\n{'!'*60}")
+                logger.warning(f"[ToolDrivenAgent] ⚠️ 达到最大迭代次数 ({self.max_iterations}) 但任务未全部完成")
+                logger.warning(f"[ToolDrivenAgent] 未完成任务数: {len(incomplete_tasks)}")
+                for task in incomplete_tasks:
+                    logger.warning(f"[ToolDrivenAgent]   - [{task.id}] {task.name}: {task.status.value}")
+                logger.warning(f"[ToolDrivenAgent] 总耗时: {total_time:.2f}秒")
+                logger.warning(f"{'!'*60}\n")
+                
+                # 发送警告事件
+                await self.emit_event("agent_warning", {
+                    "warning": f"达到最大迭代次数 ({self.max_iterations})，{len(incomplete_tasks)} 个任务未完成",
+                    "incomplete_tasks": [{"id": t.id, "name": t.name, "status": t.status.value} for t in incomplete_tasks],
+                    "iterations": self.state.iteration,
+                    "duration": total_time
+                })
+            else:
+                logger.info(f"\n{'*'*60}")
+                logger.info(f"[ToolDrivenAgent] ===== 执行完成 =====")
+                logger.info(f"[ToolDrivenAgent] 总耗时: {total_time:.2f}秒")
+                logger.info(f"[ToolDrivenAgent] 总迭代次数: {self.state.iteration}")
+                logger.info(f"[ToolDrivenAgent] 图表数: {len(self.state.images)}")
+                logger.info(f"{'*'*60}\n")
             
             # 发送报告事件
             if self.state.final_report:
@@ -503,7 +575,9 @@ class ToolDrivenAgentLoop:
                 "images": self.state.images,
                 "tasks_summary": self.state.get_tasks_summary(),
                 "iterations": self.state.iteration,
-                "duration": total_time
+                "duration": total_time,
+                "reached_max_iterations": reached_max_iterations,
+                "incomplete_tasks_count": len(incomplete_tasks)
             })
             
             return {
@@ -702,20 +776,11 @@ class ToolDrivenAgentLoop:
         })
         
         # 添加到消息历史
-        # 注意：将 reasoning 拼接到 content 中，保持上下文连贯性
-        # 这对于思考型模型（如 kimi-k2-thinking）很重要，否则模型可能"遗忘"之前的决策逻辑
-        assistant_content = content if content else ""
-        if reasoning:
-            # 将思考过程作为上下文的一部分保留
-            # 格式：[思考过程] + 实际内容
-            if assistant_content:
-                assistant_content = f"[思考：{reasoning[:500]}...]\n\n{assistant_content}" if len(reasoning) > 500 else f"[思考：{reasoning}]\n\n{assistant_content}"
-            else:
-                assistant_content = f"[思考：{reasoning[:500]}...]" if len(reasoning) > 500 else f"[思考：{reasoning}]"
-        
-        self.state.messages.append({
+        # 按照 Kimi thinking 模型官方文档，保持原始响应结构
+        # reasoning_content 作为单独字段保存，不拼接到 content 中
+        assistant_message = {
             "role": "assistant",
-            "content": assistant_content if assistant_content else None,
+            "content": content if content else None,
             "tool_calls": [{
                 "id": tool_call_id,
                 "type": "function",
@@ -724,7 +789,11 @@ class ToolDrivenAgentLoop:
                     "arguments": json.dumps(arguments, ensure_ascii=False)
                 }
             }]
-        })
+        }
+        if reasoning:
+            assistant_message["reasoning_content"] = reasoning
+        
+        self.state.messages.append(assistant_message)
         
         self.state.messages.append({
             "role": "tool",

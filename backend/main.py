@@ -29,6 +29,35 @@ from utils.logger import logger, SessionLogger
 # 全局会话日志记录器
 session_loggers: Dict[str, SessionLogger] = {}
 
+# 全局停止标志管理器
+class StopManager:
+    """管理会话的停止请求"""
+    
+    def __init__(self):
+        self._stop_flags: Dict[str, bool] = {}
+    
+    def register(self, session_id: str):
+        """注册会话"""
+        self._stop_flags[session_id] = False
+    
+    def request_stop(self, session_id: str) -> bool:
+        """请求停止会话"""
+        if session_id in self._stop_flags:
+            self._stop_flags[session_id] = True
+            logger.info(f"[StopManager] 停止请求已设置: session={session_id}")
+            return True
+        return False
+    
+    def should_stop(self, session_id: str) -> bool:
+        """检查是否应该停止"""
+        return self._stop_flags.get(session_id, False)
+    
+    def cleanup(self, session_id: str):
+        """清理会话"""
+        self._stop_flags.pop(session_id, None)
+
+stop_manager = StopManager()
+
 
 # -------------------
 # 事件缓冲管理器（解决时序问题）
@@ -273,6 +302,13 @@ async def start_analysis(
         if session_id in session_loggers:
             session_loggers[session_id].log_event(event)
     
+    # 注册停止管理器
+    stop_manager.register(session_id)
+    
+    # 创建停止检查回调
+    def should_stop() -> bool:
+        return stop_manager.should_stop(session_id)
+    
     # 根据配置选择 Agent 模式
     agent_mode = settings.AGENT_MODE
     logger.info(f"[API] Agent 模式: {agent_mode}")
@@ -282,7 +318,8 @@ async def start_analysis(
         agent = ToolDrivenAgentLoop(
             dataset_path=str(dataset_path),
             user_request=user_request,
-            event_callback=event_callback
+            event_callback=event_callback,
+            should_stop=should_stop
         )
     elif agent_mode == "task_driven":
         # 任务驱动模式：代码驱动 + 工具辅助
@@ -373,8 +410,40 @@ async def run_agent_with_error_handling(agent, session_id: str):
             session_loggers[session_id].finalize(status, total_duration)
             del session_loggers[session_id]
         
-        # 清理会话缓冲
+        # 清理会话缓冲和停止管理器
         event_buffer.cleanup(session_id)
+        stop_manager.cleanup(session_id)
+
+
+@app.post("/api/stop/{session_id}")
+async def stop_analysis(session_id: str):
+    """
+    停止正在运行的分析任务
+    
+    - 设置停止标志，Agent 将在下一个检查点停止
+    - 已完成的结果会被保留
+    """
+    if stop_manager.request_stop(session_id):
+        logger.info(f"[API] 停止请求已接收: session={session_id}")
+        
+        # 发送停止事件到前端
+        await manager.send_to_session(session_id, {
+            "type": "agent_stopped",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "session_id": session_id,
+            "payload": {"message": "分析已被用户停止"}
+        })
+        
+        return JSONResponse({
+            "status": "stop_requested",
+            "session_id": session_id,
+            "message": "停止请求已发送，Agent 将在下一个检查点停止"
+        })
+    else:
+        raise HTTPException(
+            status_code=404,
+            detail=f"未找到会话或会话已结束: {session_id}"
+        )
 
 
 @app.post("/api/start-sync")

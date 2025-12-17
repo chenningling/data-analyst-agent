@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="gpt-4o", alias="LLM_MODEL")
     
     # Agent 配置
-    max_iterations: int = Field(default=20, alias="MAX_ITERATIONS")
+    max_iterations: int = Field(default=25, alias="MAX_ITERATIONS")
     code_timeout: int = Field(default=30, alias="CODE_TIMEOUT")
     max_history_items: int = Field(default=30, alias="MAX_HISTORY_ITEMS")
     # Agent 运行模式：
