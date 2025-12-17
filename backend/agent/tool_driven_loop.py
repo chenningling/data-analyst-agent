@@ -153,7 +153,7 @@ TOOL_DRIVEN_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent，通过�
 ```
 
 ### 3. 完成任务
-任务执行成功后，标记为 completed：
+任务执行成功后，**必须立即**标记为 completed：
 ```json
 {{
   "todos": [{{"id": "1", "content": "探索数据基本特征", "status": "completed"}}],
@@ -161,15 +161,16 @@ TOOL_DRIVEN_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent，通过�
 }}
 ```
 
-## 完整工作流程
+## 完整工作流程（严格按此顺序执行）
 
 1. **了解数据**：调用 `read_dataset` 读取数据结构
-2. **创建任务清单**：调用 `todo_write`（merge=false）创建 3-5 个任务
-3. **逐个执行任务**：
+2. **创建任务清单**：调用 `todo_write`（merge=false）创建 4-6 个任务
+3. **逐个执行任务**（循环执行，直到所有任务完成）：
    - 调用 `todo_write` 标记任务为 in_progress
    - 调用 `run_code` 执行分析代码
-   - 调用 `todo_write` 标记任务为 completed
-4. **输出报告**：所有任务完成后，直接输出 Markdown 格式的分析报告
+   - **必须调用 `todo_write` 标记任务为 completed**（不可跳过！）
+4. **验证任务完成**：确认所有任务都已标记为 completed
+5. **输出报告**：只有当所有任务都是 completed 状态时，才能输出最终报告
 
 ## 代码编写规范
 
@@ -195,12 +196,25 @@ plt.close()
 print("分析结果：...")
 ```
 
-## 重要规则
+## ⚠️ 关键规则（必须严格遵守）
 
-1. **任务状态必须通过 todo_write 更新** - 每个任务开始前标记 in_progress，完成后标记 completed
-2. **按顺序执行任务** - 一次只执行一个任务
-3. **所有任务完成后才输出报告** - 确保每个任务都是 completed 状态
-4. **报告末尾添加结束标记** - `[ANALYSIS_COMPLETE]`
+1. **任务状态更新是强制性的**：
+   - 每个任务开始前必须调用 todo_write 标记 in_progress
+   - 每个任务完成后必须调用 todo_write 标记 completed
+   - **禁止跳过任务状态更新！**
+
+2. **输出报告前的强制检查**：
+   - 在输出最终报告前，必须确保任务清单中所有任务都是 completed 状态
+   - 如果还有 pending 或 in_progress 的任务，必须先完成它们
+   - **禁止在任务未全部完成时输出报告！**
+
+3. **正确的结束流程**：
+   - 第一步：调用 todo_write 将最后一个任务标记为 completed
+   - 第二步：确认所有任务都是 completed（可以在输出前列出任务状态）
+   - 第三步：输出 Markdown 格式的分析报告
+   - 第四步：在报告末尾添加 [ANALYSIS_COMPLETE] 标记
+
+4. **按顺序执行**：一次只执行一个任务
 
 ## 报告格式要求
 
@@ -225,6 +239,18 @@ print("分析结果：...")
 ---
 [ANALYSIS_COMPLETE]
 ```
+
+## 错误示例（禁止这样做）
+
+❌ 执行完代码后直接输出报告，忘记调用 todo_write 更新任务状态
+❌ 任务5还是 in_progress 就输出 [ANALYSIS_COMPLETE]
+❌ 跳过某个任务的状态更新
+
+## 正确示例
+
+✅ 执行完代码后，立即调用 todo_write 将任务标记为 completed
+✅ 所有任务都是 completed 后，才输出最终报告
+✅ 每个任务都有完整的 pending → in_progress → completed 状态变化
 """
 
 
@@ -410,7 +436,7 @@ class ToolDrivenAgentLoop:
                     # 发送最终的思考过程（如果流式中没有发送完整）
                     if reasoning and reasoning != streaming_reasoning:
                         await self.emit_event("llm_thinking", {
-                            "thinking": reasoning[:500] + ("..." if len(reasoning) > 500 else ""),
+                            "thinking": reasoning,  # 不截断，发送完整内容
                             "is_real": True,
                             "is_reasoning": True,
                             "iteration": self.state.iteration,
@@ -497,7 +523,27 @@ class ToolDrivenAgentLoop:
     
     def _is_complete(self, content: str) -> bool:
         """检查分析是否完成"""
-        return "[ANALYSIS_COMPLETE]" in content
+        if "[ANALYSIS_COMPLETE]" not in content:
+            return False
+        
+        # 检查任务状态 - 记录警告但不阻止完成
+        incomplete_tasks = self._get_incomplete_tasks()
+        if incomplete_tasks:
+            logger.warning(f"[ToolDrivenAgent] ⚠️ 检测到完成标记，但有 {len(incomplete_tasks)} 个任务未完成:")
+            for task in incomplete_tasks:
+                logger.warning(f"[ToolDrivenAgent]   - [{task.id}] {task.name}: {task.status.value}")
+        else:
+            logger.info(f"[ToolDrivenAgent] ✅ 所有 {len(self.state.tasks)} 个任务都已完成")
+        
+        return True
+    
+    def _get_incomplete_tasks(self) -> List:
+        """获取未完成的任务列表"""
+        from agent.state import TaskStatus
+        return [
+            task for task in self.state.tasks 
+            if task.status not in [TaskStatus.COMPLETED, TaskStatus.CANCELLED]
+        ]
     
     def _extract_report(self, content: str) -> str:
         """提取最终报告"""
@@ -525,7 +571,7 @@ class ToolDrivenAgentLoop:
         # 只在有模型原生思考过程时才发送思考事件（避免与 content 重复）
         if reasoning:
             await self.emit_event("llm_thinking", {
-                "thinking": reasoning[:500] + ("..." if len(reasoning) > 500 else ""),
+                "thinking": reasoning,  # 不截断，发送完整内容
                 "is_real": True,
                 "is_reasoning": True,
                 "iteration": self.state.iteration,
@@ -566,7 +612,9 @@ class ToolDrivenAgentLoop:
             "tool": tool_name,
             "status": result.get("status"),
             "has_image": result.get("has_image", False),
-            "duration": tool_duration
+            "stdout_preview": (result.get("stdout") or "")[:500],  # 添加输出预览
+            "duration": tool_duration,
+            "iteration": self.state.iteration  # 添加迭代号
         })
         
         # 添加到消息历史
