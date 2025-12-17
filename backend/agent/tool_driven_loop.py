@@ -126,18 +126,28 @@ TOOL_DRIVEN_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent，通过�
 
 1. **read_dataset** - 读取数据结构和预览
 2. **run_code** - 执行 Python 代码进行分析
-3. **todo_write** - 管理任务清单（核心工具）
+3. **todo_write** - 任务状态同步工具（核心工具）
+
+## 核心原则：通过工具调用实现任务闭环
+
+`todo_write` 是任务状态同步工具，你必须通过它来：
+- **规划**：创建任务清单
+- **执行**：标记任务开始（in_progress）
+- **验收**：标记任务完成（completed）
+
+**关键**：每完成一个任务，都必须调用 `todo_write` 将其标记为 completed。这不仅是状态更新，更是对该任务结果的**验收确认**。只有当所有任务都被标记为 completed，整个分析才算完成。
 
 ## todo_write 工具使用指南
 
 ### 1. 创建任务清单（分析开始时）
-读取数据后，调用 todo_write 创建任务清单：
+根据用户需求和数据特点，调用 todo_write 创建任务清单：
 ```json
 {{
   "todos": [
     {{"id": "1", "content": "探索数据基本特征", "status": "pending"}},
     {{"id": "2", "content": "分析销售趋势", "status": "pending"}},
-    {{"id": "3", "content": "生成可视化图表", "status": "pending"}}
+    {{"id": "3", "content": "生成可视化图表", "status": "pending"}},
+    {{"id": "4", "content": "总结分析并输出报告", "status": "pending"}}
   ],
   "merge": false
 }}
@@ -152,25 +162,25 @@ TOOL_DRIVEN_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent，通过�
 }}
 ```
 
-### 3. 完成任务
-任务执行成功后，**必须立即**标记为 completed：
+### 3. 完成任务（验收）
+任务执行成功后，**必须调用 todo_write 标记为 completed**：
 ```json
 {{
   "todos": [{{"id": "1", "content": "探索数据基本特征", "status": "completed"}}],
   "merge": true
 }}
 ```
+这一步是对任务结果的**验收确认**，表示你确认该任务已正确完成。
 
-## 完整工作流程（严格按此顺序执行）
+## 完整工作流程
 
 1. **了解数据**：调用 `read_dataset` 读取数据结构
-2. **创建任务清单**：调用 `todo_write`（merge=false）创建 4-6 个任务
+2. **创建任务清单**：调用 `todo_write`（merge=false）根据用户需求创建任务
 3. **逐个执行任务**（循环执行，直到所有任务完成）：
-   - 调用 `todo_write` 标记任务为 in_progress
-   - 调用 `run_code` 执行分析代码
-   - **必须调用 `todo_write` 标记任务为 completed**（不可跳过！）
-4. **验证任务完成**：确认所有任务都已标记为 completed
-5. **输出报告**：只有当所有任务都是 completed 状态时，才能输出最终报告
+   - 调用 `todo_write` 标记任务为 in_progress（开始）
+   - 执行任务（调用 run_code 或输出分析内容）
+   - **调用 `todo_write` 标记任务为 completed（验收）**
+4. **完成闭环**：当所有任务都被标记为 completed 时，分析完成
 
 ## 代码编写规范
 
@@ -198,23 +208,22 @@ print("分析结果：...")
 
 ## ⚠️ 关键规则（必须严格遵守）
 
-1. **任务状态更新是强制性的**：
-   - 每个任务开始前必须调用 todo_write 标记 in_progress
-   - 每个任务完成后必须调用 todo_write 标记 completed
-   - **禁止跳过任务状态更新！**
+1. **每个任务都必须经过完整的状态流转**：
+   - pending → in_progress → completed
+   - 每次状态变化都必须调用 todo_write
 
-2. **输出报告前的强制检查**：
-   - 在输出最终报告前，必须确保任务清单中所有任务都是 completed 状态
-   - 如果还有 pending 或 in_progress 的任务，必须先完成它们
-   - **禁止在任务未全部完成时输出报告！**
+2. **验收是通过工具调用实现的**：
+   - 调用 todo_write 标记 completed = 验收该任务通过
+   - 不调用工具就输出内容 ≠ 任务完成
 
-3. **正确的结束流程**：
-   - 第一步：调用 todo_write 将最后一个任务标记为 completed
-   - 第二步：确认所有任务都是 completed（可以在输出前列出任务状态）
-   - 第三步：输出 Markdown 格式的分析报告
-   - 第四步：在报告末尾添加 [ANALYSIS_COMPLETE] 标记
+3. **最后一个任务也必须调用工具验收**：
+   - 即使已经输出了总结报告
+   - 仍然必须调用 todo_write 将最后一个任务标记为 completed
+   - 这是整个分析的**最终验收**
 
-4. **按顺序执行**：一次只执行一个任务
+4. **任务闭环判断**：
+   - 只有当所有任务都是 completed 状态时，分析才算真正完成
+   - 在此之前，即使输出了报告内容，也不会交付给用户
 
 ## 报告格式要求
 
@@ -235,22 +244,19 @@ print("分析结果：...")
 
 ## 📋 总结
 ...
-
----
-[ANALYSIS_COMPLETE]
 ```
 
 ## 错误示例（禁止这样做）
 
-❌ 执行完代码后直接输出报告，忘记调用 todo_write 更新任务状态
-❌ 任务5还是 in_progress 就输出 [ANALYSIS_COMPLETE]
+❌ 执行完代码后不调用 todo_write，直接进入下一个任务
+❌ 输出报告后不调用 todo_write 验收最后一个任务
 ❌ 跳过某个任务的状态更新
 
 ## 正确示例
 
-✅ 执行完代码后，立即调用 todo_write 将任务标记为 completed
-✅ 所有任务都是 completed 后，才输出最终报告
-✅ 每个任务都有完整的 pending → in_progress → completed 状态变化
+✅ 每个任务执行后，立即调用 todo_write 标记为 completed
+✅ 最后一个任务（输出报告）完成后，也调用 todo_write 标记为 completed
+✅ 所有任务都是 completed 后，分析才算完成
 """
 
 
@@ -278,6 +284,10 @@ class ToolDrivenAgentLoop:
             dataset_path=dataset_path,
             user_request=user_request
         )
+        
+        # 验收标志：由 agent 通过工具调用设置
+        self.report_validated = False
+        self.pending_report = None  # 暂存报告内容，等待验收
         
         # 获取 LLM 客户端并设置 session（每个 session 独立日志文件）
         self.llm = get_llm_client()
@@ -427,11 +437,19 @@ class ToolDrivenAgentLoop:
                     await self._handle_tool_call(response, iteration_duration)
                     
                 else:
-                    # LLM 输出文本（可能是最终报告）
+                    # LLM 输出文本（可能是报告内容）
                     content = response["content"]
                     reasoning = response.get("reasoning")
                     
-                    self.state.messages.append({"role": "assistant", "content": content})
+                    # 将 reasoning 拼接到 content 中，保持上下文连贯性
+                    assistant_content = content if content else ""
+                    if reasoning:
+                        if assistant_content:
+                            assistant_content = f"[思考：{reasoning[:500]}...]\n\n{assistant_content}" if len(reasoning) > 500 else f"[思考：{reasoning}]\n\n{assistant_content}"
+                        else:
+                            assistant_content = f"[思考：{reasoning[:500]}...]" if len(reasoning) > 500 else f"[思考：{reasoning}]"
+                    
+                    self.state.messages.append({"role": "assistant", "content": assistant_content if assistant_content else content})
                     
                     # 发送最终的思考过程（如果流式中没有发送完整）
                     if reasoning and reasoning != streaming_reasoning:
@@ -444,11 +462,23 @@ class ToolDrivenAgentLoop:
                         })
                         logger.info(f"[ToolDrivenAgent] 🧠 模型思考: {reasoning[:200]}...")
                     
-                    # 检查是否完成
-                    if self._is_complete(content):
-                        logger.info(f"[ToolDrivenAgent] ✅ 检测到分析完成标记")
-                        self.state.final_report = self._extract_report(content)
-                        break
+                    # 暂存可能是报告的内容
+                    if self._looks_like_report(content):
+                        self.pending_report = content
+                        logger.info(f"[ToolDrivenAgent] 📝 检测到报告内容，等待 agent 验收...")
+                    
+                    # 注意：这里不直接结束，而是继续循环让 agent 调用 todo_write 进行验收
+                
+                # 在工具调用后检查是否验收通过
+                if self._is_complete():
+                    logger.info(f"[ToolDrivenAgent] ✅ Agent 验收通过，分析完成")
+                    # 使用暂存的报告或最后的内容
+                    if self.pending_report:
+                        self.state.final_report = self._extract_report(self.pending_report)
+                    else:
+                        # 查找最后一个包含报告内容的 assistant 消息
+                        self.state.final_report = self._find_report_in_messages()
+                    break
             
             # 完成
             self.state.phase = AgentPhase.COMPLETED
@@ -521,20 +551,26 @@ class ToolDrivenAgentLoop:
 
 请开始执行。"""
     
-    def _is_complete(self, content: str) -> bool:
-        """检查分析是否完成"""
-        if "[ANALYSIS_COMPLETE]" not in content:
+    def _is_complete(self) -> bool:
+        """
+        检查分析是否完成
+        
+        核心原则：通过工具调用验收来判断完成，而非文本标记
+        只有当 agent 通过 todo_write 将所有任务（特别是"验收"任务）标记为 completed 时才算完成
+        """
+        # 必须通过工具验收
+        if not self.report_validated:
             return False
         
-        # 检查任务状态 - 记录警告但不阻止完成
+        # 检查任务状态
         incomplete_tasks = self._get_incomplete_tasks()
         if incomplete_tasks:
-            logger.warning(f"[ToolDrivenAgent] ⚠️ 检测到完成标记，但有 {len(incomplete_tasks)} 个任务未完成:")
+            logger.warning(f"[ToolDrivenAgent] ⚠️ 验收标记已设置，但有 {len(incomplete_tasks)} 个任务未完成:")
             for task in incomplete_tasks:
                 logger.warning(f"[ToolDrivenAgent]   - [{task.id}] {task.name}: {task.status.value}")
-        else:
-            logger.info(f"[ToolDrivenAgent] ✅ 所有 {len(self.state.tasks)} 个任务都已完成")
+            return False
         
+        logger.info(f"[ToolDrivenAgent] ✅ Agent 自主验收通过，所有 {len(self.state.tasks)} 个任务都已完成")
         return True
     
     def _get_incomplete_tasks(self) -> List:
@@ -545,13 +581,61 @@ class ToolDrivenAgentLoop:
             if task.status not in [TaskStatus.COMPLETED, TaskStatus.CANCELLED]
         ]
     
+    def _looks_like_report(self, content: str) -> bool:
+        """
+        检查内容是否看起来像是分析报告
+        
+        通过特征匹配来识别报告内容
+        """
+        if not content or len(content) < 200:
+            return False
+        
+        # 报告特征关键词
+        report_indicators = [
+            "# 数据分析报告",
+            "## 数据概览",
+            "## 关键发现",
+            "## 分析",
+            "📊",
+            "🔍",
+            "📈",
+            "💡"
+        ]
+        
+        indicator_count = sum(1 for indicator in report_indicators if indicator in content)
+        
+        # 如果包含 2 个以上的报告特征，认为是报告
+        return indicator_count >= 2
+    
+    def _find_report_in_messages(self) -> str:
+        """
+        在消息历史中查找报告内容
+        
+        从后往前查找，找到最后一个看起来像报告的 assistant 消息
+        """
+        for message in reversed(self.state.messages):
+            if message.get("role") == "assistant":
+                content = message.get("content", "")
+                if content and self._looks_like_report(content):
+                    return self._extract_report(content)
+        
+        # 如果没找到，返回空或最后的 assistant 内容
+        for message in reversed(self.state.messages):
+            if message.get("role") == "assistant" and message.get("content"):
+                return message.get("content", "")
+        
+        return ""
+    
     def _extract_report(self, content: str) -> str:
         """提取最终报告"""
-        # 移除结束标记
-        report = content.replace("[ANALYSIS_COMPLETE]", "").strip()
-        # 移除末尾的分隔线
         import re
+        
+        # 清理可能的结束标记（兼容旧格式）
+        report = content.replace("[ANALYSIS_COMPLETE]", "").strip()
+        
+        # 移除末尾的分隔线
         report = re.sub(r'\n---\s*$', '', report)
+        
         return report.strip()
     
     # ============================================================
@@ -618,9 +702,20 @@ class ToolDrivenAgentLoop:
         })
         
         # 添加到消息历史
+        # 注意：将 reasoning 拼接到 content 中，保持上下文连贯性
+        # 这对于思考型模型（如 kimi-k2-thinking）很重要，否则模型可能"遗忘"之前的决策逻辑
+        assistant_content = content if content else ""
+        if reasoning:
+            # 将思考过程作为上下文的一部分保留
+            # 格式：[思考过程] + 实际内容
+            if assistant_content:
+                assistant_content = f"[思考：{reasoning[:500]}...]\n\n{assistant_content}" if len(reasoning) > 500 else f"[思考：{reasoning}]\n\n{assistant_content}"
+            else:
+                assistant_content = f"[思考：{reasoning[:500]}...]" if len(reasoning) > 500 else f"[思考：{reasoning}]"
+        
         self.state.messages.append({
             "role": "assistant",
-            "content": content if content else None,
+            "content": assistant_content if assistant_content else None,
             "tool_calls": [{
                 "id": tool_call_id,
                 "type": "function",
@@ -697,7 +792,8 @@ class ToolDrivenAgentLoop:
         """
         执行 todo_write 工具
         
-        这是核心：LLM 通过这个工具自主管理任务状态
+        这是任务状态同步的核心工具。
+        每次调用后检查：如果所有任务都是 completed，则验收通过。
         """
         todos = arguments.get("todos", [])
         merge = arguments.get("merge", True)
@@ -707,6 +803,7 @@ class ToolDrivenAgentLoop:
         if not merge:
             # 完全覆盖模式：清空现有任务，创建新任务
             self.state.tasks = []
+            self.report_validated = False  # 重置验收状态
             logger.info(f"[ToolDrivenAgent]   清空现有任务，创建新清单")
         
         updated_tasks = []
@@ -754,6 +851,16 @@ class ToolDrivenAgentLoop:
                     "changed": True
                 })
         
+        # 核心验收逻辑：检查是否所有任务都已完成
+        incomplete_tasks = self._get_incomplete_tasks()
+        all_completed = len(incomplete_tasks) == 0 and len(self.state.tasks) > 0
+        
+        if all_completed and not self.report_validated:
+            self.report_validated = True
+            logger.info(f"[ToolDrivenAgent] ✅ 任务闭环完成！所有 {len(self.state.tasks)} 个任务都已标记为 completed")
+        elif not all_completed:
+            logger.info(f"[ToolDrivenAgent]   当前进度: {len(self.state.tasks) - len(incomplete_tasks)}/{len(self.state.tasks)} 任务已完成")
+        
         # 发送任务更新事件
         await self.emit_event("tasks_updated", {
             "tasks": [
@@ -766,7 +873,9 @@ class ToolDrivenAgentLoop:
                 }
                 for t in self.state.tasks
             ],
-            "source": "tool"  # 标记来源是工具调用
+            "source": "tool",  # 标记来源是工具调用
+            "all_completed": all_completed,
+            "report_validated": self.report_validated
         })
         
         # 构建返回结果
@@ -774,7 +883,7 @@ class ToolDrivenAgentLoop:
         pending_count = len([t for t in self.state.tasks if t.status == TaskStatus.PENDING])
         in_progress_count = len([t for t in self.state.tasks if t.status == TaskStatus.IN_PROGRESS])
         
-        return {
+        result = {
             "status": "success",
             "message": f"任务清单已更新",
             "summary": {
@@ -785,6 +894,15 @@ class ToolDrivenAgentLoop:
             },
             "updated": updated_tasks
         }
+        
+        # 如果所有任务完成，在返回结果中明确告知
+        if all_completed:
+            result["task_loop_closed"] = {
+                "completed": True,
+                "message": "所有任务已完成，分析任务闭环"
+            }
+        
+        return result
     
     def _build_tool_result(self, tool_name: str, result: Dict[str, Any]) -> str:
         """构建工具结果字符串"""
