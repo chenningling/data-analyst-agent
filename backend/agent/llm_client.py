@@ -168,9 +168,9 @@ class LLMClient:
         if extra_params:
             logger.info(f"[LLM] 额外参数: {extra_params}")
     
-    def _extract_reasoning(self, message) -> Optional[str]:
+    def _extract_reasoning(self, message) -> tuple[Optional[str], Optional[str]]:
         """
-        从模型响应中提取思考过程
+        从模型响应中提取思考过程和原始字段名
         
         支持多种字段名（不同模型可能使用不同的字段）：
         - reasoning_content: DeepSeek-R1 等模型
@@ -178,6 +178,9 @@ class LLMClient:
         - thinking_content: 某些模型
         - thinking: 某些模型
         - reason: 某些模型
+        
+        Returns:
+            (reasoning_value, original_field_name) 元组，如果未找到则返回 (None, None)
         """
         # 可能的思考过程字段名列表
         reasoning_fields = [
@@ -195,21 +198,21 @@ class LLMClient:
             if hasattr(message, field):
                 value = getattr(message, field)
                 if value:
-                    return str(value)
+                    return (str(value), field)
         
         # 尝试从 message 的 __dict__ 中提取（某些模型可能使用动态属性）
         if hasattr(message, '__dict__'):
             for field in reasoning_fields:
                 if field in message.__dict__ and message.__dict__[field]:
-                    return str(message.__dict__[field])
+                    return (str(message.__dict__[field]), field)
         
         # 尝试从 message 作为字典访问（某些 API 可能返回字典）
         if isinstance(message, dict):
             for field in reasoning_fields:
                 if field in message and message[field]:
-                    return str(message[field])
+                    return (str(message[field]), field)
         
-        return None
+        return (None, None)
     
     def _log_response(self, response_type: str, result: Dict[str, Any], duration: float):
         """记录响应日志"""
@@ -296,22 +299,26 @@ class LLMClient:
             if hasattr(response, 'usage') and response.usage:
                 logger.info(f"[LLM] Token 使用: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, total={response.usage.total_tokens}")
             
-            # 提取模型的思考过程（支持多种字段名）
-            reasoning = self._extract_reasoning(message)
+            # 提取模型的思考过程和原始字段名
+            reasoning, reasoning_field_name = self._extract_reasoning(message)
             if reasoning:
                 logger.info(f"[LLM] 🧠 模型思考过程: {reasoning[:200]}...")
             
-            # 构建原始响应数据用于日志
+            # 构建原始响应数据用于日志（保留原始字段名）
+            message_dict = {
+                "role": message.role,
+                "content": message.content
+            }
+            # 如果有思考过程，使用原始字段名
+            if reasoning and reasoning_field_name:
+                message_dict[reasoning_field_name] = reasoning
+            
             raw_response_data = {
                 "id": response.id if hasattr(response, 'id') else None,
                 "model": response.model if hasattr(response, 'model') else None,
                 "choices": [{
                     "index": response.choices[0].index if hasattr(response.choices[0], 'index') else 0,
-                    "message": {
-                        "role": message.role,
-                        "content": message.content,
-                        "reasoning": reasoning  # 记录思考过程
-                    },
+                    "message": message_dict,
                     "finish_reason": response.choices[0].finish_reason if hasattr(response.choices[0], 'finish_reason') else None
                 }]
             }
@@ -436,6 +443,7 @@ class LLMClient:
             # 收集完整响应
             full_content = ""
             full_reasoning = ""
+            reasoning_field_name = None  # 记录原始字段名
             tool_calls_data: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, arguments}
             finish_reason = None
             
@@ -452,11 +460,16 @@ class LLMClient:
                     finish_reason = choice.finish_reason
                 
                 # 处理思考过程（如果模型支持，如 DeepSeek-R1）
+                # 优先使用 reasoning_content（Kimi thinking 模型官方字段）
                 reasoning_content = None
                 if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                     reasoning_content = delta.reasoning_content
+                    if reasoning_field_name is None:
+                        reasoning_field_name = 'reasoning_content'
                 elif hasattr(delta, 'reasoning') and delta.reasoning:
                     reasoning_content = delta.reasoning
+                    if reasoning_field_name is None:
+                        reasoning_field_name = 'reasoning'
                 
                 if reasoning_content:
                     full_reasoning += reasoning_content
@@ -499,16 +512,20 @@ class LLMClient:
             # 记录 token 使用（流式模式下可能没有）
             logger.info(f"[LLM] 流式响应完成，耗时: {duration:.2f}秒")
             
-            # 构建响应数据用于日志
+            # 构建响应数据用于日志（保留原始字段名）
+            message_dict = {
+                "role": "assistant",
+                "content": full_content
+            }
+            # 如果有思考过程，使用原始字段名
+            if full_reasoning and reasoning_field_name:
+                message_dict[reasoning_field_name] = full_reasoning
+            
             raw_response_data = {
                 "model": self.model,
                 "stream": True,
                 "choices": [{
-                    "message": {
-                        "role": "assistant",
-                        "content": full_content,
-                        "reasoning": full_reasoning if full_reasoning else None
-                    },
+                    "message": message_dict,
                     "finish_reason": finish_reason
                 }]
             }

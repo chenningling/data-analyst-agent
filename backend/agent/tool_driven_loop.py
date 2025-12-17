@@ -120,7 +120,7 @@ TOOL_DRIVEN_TOOLS_SCHEMA = [
 # 系统提示词
 # ============================================================
 
-TOOL_DRIVEN_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent，通过工具自主完成数据分析任务。
+TOOL_DRIVEN_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent，通过工具自主完成数据分析任务，最终交付给用户一个完整的数据分析报告。
 
 ## 可用工具
 
@@ -241,7 +241,7 @@ print("分析结果：...")
 3. **批量处理**：如果多个任务可以并行或连续执行，可以合并处理后再一次性更新状态
 
 ## 报告格式要求
-
+结合用户需求和任务执行结果，生成完整的数据分析报告。
 ```markdown
 # 数据分析报告
 
@@ -685,18 +685,38 @@ class ToolDrivenAgentLoop:
         """
         在消息历史中查找报告内容
         
-        从后往前查找，找到最后一个看起来像报告的 assistant 消息
+        优先从工具执行结果中查找，然后查找 assistant 消息
         """
+        import json
+        
+        # 首先从工具执行结果中查找报告（从后往前）
+        for message in reversed(self.state.messages):
+            if message.get("role") == "tool":
+                tool_content = message.get("content", "")
+                if tool_content:
+                    try:
+                        tool_result = json.loads(tool_content)
+                        stdout = tool_result.get("stdout", "")
+                        if stdout and self._looks_like_report(stdout):
+                            return self._extract_report(stdout)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        
+        # 然后查找 assistant 消息中的报告内容
         for message in reversed(self.state.messages):
             if message.get("role") == "assistant":
                 content = message.get("content", "")
                 if content and self._looks_like_report(content):
                     return self._extract_report(content)
         
-        # 如果没找到，返回空或最后的 assistant 内容
+        # 如果都没找到，返回最后一个有内容的 assistant 消息（但这不是报告）
+        # 注意：这里不应该返回第一个消息，而应该返回空或提示
         for message in reversed(self.state.messages):
             if message.get("role") == "assistant" and message.get("content"):
-                return message.get("content", "")
+                content = message.get("content", "")
+                # 只返回非空且不是初始消息的内容
+                if content and len(content) > 50:
+                    return content
         
         return ""
     
@@ -847,6 +867,12 @@ class ToolDrivenAgentLoop:
                 "image_base64": result["image_base64"],
                 "iteration": self.state.iteration
             })
+        
+        # 检测工具执行结果中是否包含报告内容
+        stdout = result.get("stdout", "")
+        if stdout and self._looks_like_report(stdout):
+            self.pending_report = stdout
+            logger.info(f"[ToolDrivenAgent] 📝 在工具执行结果中检测到报告内容，已暂存")
         
         # 记录分析结果
         self.state.analysis_results.append({
