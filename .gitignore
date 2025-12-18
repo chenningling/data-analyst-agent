@@ -166,6 +166,9 @@ logs/
 # 会话日志记录目录
 # record/*.txt
 
+# 历史记录目录（忽略整个 history 文件夹）
+record/history/
+
 # 生成的报告
 reports/
 output/
@@ -182,6 +185,13 @@ sample_data/
 !public/**/*.jpg
 !frontend/public/**/*.png
 !frontend/public/**/*.svg
+
+# 演示视频和资源（允许提交）
+!docs/assets/*.mp4
+!docs/assets/*.MOV
+!docs/assets/*.mov
+!docs/assets/*.gif
+!docs/assets/*.webm
 
 # ================================
 # 其他

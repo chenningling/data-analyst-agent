@@ -12,6 +12,7 @@ todo_write 工具的完整作用：
 4. LLM 自主判断所有任务完成后输出报告
 """
 import json
+import re
 import uuid
 import time
 from typing import Callable, Dict, Any, Optional, List, Awaitable
@@ -120,67 +121,28 @@ TOOL_DRIVEN_TOOLS_SCHEMA = [
 # 系统提示词
 # ============================================================
 
-TOOL_DRIVEN_SYSTEM_PROMPT = """你是一个专业的数据分析 Agent，通过工具自主完成数据分析任务，最终交付给用户一个完整的数据分析报告。
-
+TOOL_DRIVEN_SYSTEM_PROMPT = """
+你是一个专业的数据分析 Agent，职责是通过代码执行自主完成数据分析，生成丰富的可视化图表，并交付专业报告。
 ## 可用工具
+1. `read_dataset`:读取数据结构和预览
+2. `run_code` :执行 Python 代码进行分析
+3. `todo_write`: 任务状态同步工具
 
-1. **read_dataset** - 读取数据结构和预览
-2. **run_code** - 执行 Python 代码进行分析
-3. **todo_write** - 任务状态同步工具（核心工具）
+## 核心工作流
+你的工作由 `todo_write` 工具驱动，请严格遵守以下 "Plan-Execute-Verify" 循环：
 
-## 核心原则：通过工具调用实现任务闭环
+1.  **规划 (Plan)**：
+    - 读取数据 (`read_dataset`) 后，立即调用 `todo_write` (merge=false) 创建 3-5 个的原子待办事项（≤14 字，动词开头，结果明确）。。
+    - **关键**：最后一个任务必须命名为“撰写并输出分析报告”。
 
-`todo_write` 是任务状态同步工具，你必须通过它来：
-- **规划**：创建任务清单
-- **执行**：标记任务开始（in_progress）
-- **验收**：标记任务完成（completed）
+2.  **执行 (Execute)**：
+    - 严格按照顺序执行任务。
+    - **开始任务前**：调用 `todo_write` 将该任务标记为 `in_progress`。
+    - **执行任务中**：编写并运行 Python 代码 (`run_code`) 进行分析。
 
-**关键**：每完成一个任务，都必须调用 `todo_write` 将其标记为 completed。这不仅是状态更新，更是对该任务结果的**验收确认**。只有当所有任务都被标记为 completed，整个分析才算完成。
-
-## todo_write 工具使用指南
-
-### 1. 创建任务清单（分析开始时）
-根据用户需求和数据特点，调用 todo_write 创建任务清单：
-```json
-{{
-  "todos": [
-    {{"id": "1", "content": "探索数据基本特征", "status": "pending"}},
-    {{"id": "2", "content": "分析销售趋势", "status": "pending"}},
-    {{"id": "3", "content": "生成可视化图表", "status": "pending"}},
-    {{"id": "4", "content": "总结分析并输出报告", "status": "pending"}}
-  ],
-  "merge": false
-}}
-```
-
-### 2. 开始执行任务
-执行任务前，先标记为 in_progress：
-```json
-{{
-  "todos": [{{"id": "1", "content": "探索数据基本特征", "status": "in_progress"}}],
-  "merge": true
-}}
-```
-
-### 3. 完成任务（验收）
-任务执行成功后，**必须调用 todo_write 标记为 completed**：
-```json
-{{
-  "todos": [{{"id": "1", "content": "探索数据基本特征", "status": "completed"}}],
-  "merge": true
-}}
-```
-这一步是对任务结果的**验收确认**，表示你确认该任务已正确完成。
-
-## 完整工作流程
-
-1. **了解数据**：调用 `read_dataset` 读取数据结构
-2. **创建任务清单**：调用 `todo_write`（merge=false）根据用户需求创建3-5个任务
-3. **逐个执行任务**（循环执行，直到所有任务完成）：
-   - 调用 `todo_write` 标记任务为 in_progress（开始）
-   - 执行任务（调用 run_code 或输出分析内容）
-   - **调用 `todo_write` 标记任务为 completed（验收）**
-4. **完成闭环**：当所有任务都被标记为 completed 时，分析完成
+3.  **验收 (Verify)**：
+    - **任务完成后**：必须调用 `todo_write` 将该任务标记为 `completed`。
+    - 只有当一个任务状态变为 completed，你才能进入下一个任务。
 
 ## 代码编写规范
 
@@ -206,72 +168,48 @@ plt.close()
 print("分析结果：...")
 ```
 
-## ⚠️ 关键规则（必须严格遵守）
+## ⚠️ 关于“最终报告”的特殊规则
 
-1. **每个任务都必须经过完整的状态流转**：
-   - pending → in_progress → completed
-   - 每次状态变化都必须调用 todo_write
+最后一个任务（即“撰写并输出分析报告”）的执行逻辑与其他任务不同，必须严格遵守：
 
-2. **验收是通过工具调用实现的**：
-   - 调用 todo_write 标记 completed = 验收该任务通过
-   - 不调用工具就输出内容 ≠ 任务完成
+1.  **先标记进行中**：调用 `todo_write` 标记任务为 `in_progress`。
+2.  **后输出正文**：**直接在对话中输出完整的 Markdown 格式分析报告**。
+    - 报告必须包含：数据概览、关键发现、可视化结论、业务建议。
+    - **禁止**仅在代码中 print 报告，用户需要看到渲染好的 Markdown 文本。
+3.  **最后标记完成**：
+    - **只有在 Markdown 报告完全输出后**，才再次调用 `todo_write` 将最后一个任务标记为 `completed`。
+    - 这是整个分析工作的**最终验收信号**。
 
-3. **最后一个任务也必须调用工具验收**：
-   - 即使已经输出了总结报告
-   - 仍然必须调用 todo_write 将最后一个任务标记为 completed
-   - 这是整个分析的**最终验收**
+## 业务规则与最佳实践
 
-4. **任务闭环判断**：
-   - 只有当所有任务都是 completed 状态时，分析才算真正完成
-   - 在此之前，即使输出了报告内容，也不会交付给用户
+1.  **状态流转严谨性**：每个任务必须经历 `pending -> in_progress -> completed` 的完整生命周期。
+2.  **代码规范**：
+    - 使用 `pandas` 处理数据，`matplotlib`/`seaborn` 绘图。
+    - 设置中文字体（如 `SimHei`, `Arial Unicode MS`）避免乱码。
+    - 图表保存后，请 print 出关键的数据结论，以便后续分析引用。
+3.  **效率原则**：
+    - 避免无意义的单步操作。例如：可以将“标记任务A完成”和“标记任务B开始”在一次 `todo_write` 调用中合并处理。
 
-## ⚡ 效率要求
+## 工作流结束规则
+当你认为任务目标已经达成，在最终一轮中：
+使用`todo_write` 工具，确保所有任务标记为`completed`，并生成你的工作总结。
 
-1. **合并状态更新**：可以在一次 todo_write 调用中同时更新多个任务状态
-   - 例如：完成任务1的同时开始任务2
-   ```json
-   {{"todos": [
-     {{"id": "1", "content": "任务1", "status": "completed"}},
-     {{"id": "2", "content": "任务2", "status": "in_progress"}}
-   ], "merge": true}}
-   ```
-
-2. **避免不必要的思考**：每次迭代都会消耗资源，请高效执行
-
-3. **批量处理**：如果多个任务可以并行或连续执行，可以合并处理后再一次性更新状态
-
-## 报告格式要求
-结合用户需求和任务执行结果，生成完整的数据分析报告。
+## 报告格式参考
 ```markdown
-# 数据分析报告
+# [分析主题] 数据分析报告
 
-## 📊 数据概览
-...
+## 1. 📊 数据概览
+(描述数据规模、结构、质量...)
 
-## 🔍 关键发现
-...
-
-## 📈 分析详情
-...
-
-## 💡 洞察与建议
-...
-
-## 📋 总结
-...
+## 2. 🔍 关键发现与图表
+(结合 run_code 生成的图表和数据进行解读...)
+## 3. 💡 结论与建议
+(基于数据得出的业务洞察...)
 ```
 
-## 错误示例（禁止这样做）
-
-❌ 执行完代码后不调用 todo_write，直接进入下一个任务
-❌ 输出报告后不调用 todo_write 验收最后一个任务
-❌ 跳过某个任务的状态更新
-
-## 正确示例
-
-✅ 每个任务执行后，立即调用 todo_write 标记为 completed
-✅ 最后一个任务（输出报告）完成后，也调用 todo_write 标记为 completed
-✅ 所有任务都是 completed 后，分析才算完成
+## 其他要求
+- 不要向用户提及工具名称；自然地描述操作。 
+- 每当完成任务时，在报告进度前调用 `todo_write`更新待办清单。
 """
 
 
@@ -664,32 +602,61 @@ class ToolDrivenAgentLoop:
         if not content or len(content) < 200:
             return False
         
-        # 报告特征关键词
+        # 报告特征关键词（Markdown 格式）
         report_indicators = [
             "# 数据分析报告",
+            "# 分析报告",
             "## 数据概览",
             "## 关键发现",
             "## 分析",
+            "## 总结",
+            "## 洞察",
+            "## 建议",
             "📊",
             "🔍",
             "📈",
-            "💡"
+            "💡",
+            "## 📊",
+            "## 🔍",
+            "## 📈",
+            "## 💡"
         ]
         
+        # 检查是否包含 Markdown 标题格式
+        has_markdown_headers = bool(re.search(r'^#+\s+', content, re.MULTILINE))
+        
+        # 检查是否包含报告特征关键词
         indicator_count = sum(1 for indicator in report_indicators if indicator in content)
         
-        # 如果包含 2 个以上的报告特征，认为是报告
-        return indicator_count >= 2
+        # 如果包含 Markdown 标题且包含 1 个以上的报告特征，认为是报告
+        # 或者包含 2 个以上的报告特征（即使没有 Markdown 标题）
+        return (has_markdown_headers and indicator_count >= 1) or indicator_count >= 2
     
     def _find_report_in_messages(self) -> str:
         """
         在消息历史中查找报告内容
         
-        优先从工具执行结果中查找，然后查找 assistant 消息
+        优先从 assistant 消息中查找（LLM生成的报告），然后才查找工具执行结果
         """
         import json
         
-        # 首先从工具执行结果中查找报告（从后往前）
+        # 首先查找 assistant 消息中的报告内容（LLM生成的，优先级最高）
+        for message in reversed(self.state.messages):
+            if message.get("role") == "assistant":
+                content = message.get("content", "")
+                # 跳过工具调用的消息（content为None或空）
+                if not content:
+                    continue
+                # 检查是否是报告内容
+                if self._looks_like_report(content):
+                    logger.info(f"[ToolDrivenAgent] 在 assistant 消息中找到报告内容，长度: {len(content)}")
+                    return self._extract_report(content)
+                # 如果内容足够长且包含报告特征，也认为是报告
+                elif len(content) > 500 and any(keyword in content for keyword in ["报告", "分析", "总结", "概览", "发现"]):
+                    logger.info(f"[ToolDrivenAgent] 在 assistant 消息中找到可能的报告内容，长度: {len(content)}")
+                    return self._extract_report(content)
+        
+        # 如果 assistant 消息中没有找到，再从工具执行结果中查找（代码打印的内容，作为备选）
         for message in reversed(self.state.messages):
             if message.get("role") == "tool":
                 tool_content = message.get("content", "")
@@ -698,26 +665,22 @@ class ToolDrivenAgentLoop:
                         tool_result = json.loads(tool_content)
                         stdout = tool_result.get("stdout", "")
                         if stdout and self._looks_like_report(stdout):
+                            logger.warning(f"[ToolDrivenAgent] ⚠️ 在工具执行结果中找到报告内容（可能是代码打印的），长度: {len(stdout)}")
+                            logger.warning(f"[ToolDrivenAgent] ⚠️ 建议：LLM 应该在最后输出文本报告，而不是只调用工具")
                             return self._extract_report(stdout)
                     except (json.JSONDecodeError, TypeError):
                         pass
         
-        # 然后查找 assistant 消息中的报告内容
-        for message in reversed(self.state.messages):
-            if message.get("role") == "assistant":
-                content = message.get("content", "")
-                if content and self._looks_like_report(content):
-                    return self._extract_report(content)
-        
         # 如果都没找到，返回最后一个有内容的 assistant 消息（但这不是报告）
-        # 注意：这里不应该返回第一个消息，而应该返回空或提示
         for message in reversed(self.state.messages):
             if message.get("role") == "assistant" and message.get("content"):
                 content = message.get("content", "")
                 # 只返回非空且不是初始消息的内容
                 if content and len(content) > 50:
+                    logger.warning(f"[ToolDrivenAgent] ⚠️ 未找到明确的报告内容，返回最后一个 assistant 消息")
                     return content
         
+        logger.warning(f"[ToolDrivenAgent] ⚠️ 未找到任何报告内容")
         return ""
     
     def _extract_report(self, content: str) -> str:
