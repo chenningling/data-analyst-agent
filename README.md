@@ -8,9 +8,7 @@
 
 ### 演示视频
 
-<video width="800" controls>
-  <source src="https://github.com/chenningling/data-analyst-agent/raw/main/docs/assets/demo.mp4" type="video/mp4">
-</video>
+https://github.com/user-attachments/assets/1e3afc0b-32d9-4c13-a59f-c77ed540dd3e
 
 ## ✨ 功能特点
 
@@ -414,95 +412,6 @@ cat record/session_*.txt | grep "session_id"
 - [ ] 添加分析历史记录和结果缓存
 - [ ] 支持自定义分析模板
 - [ ] 添加数据导出功能
-
-## 📹 添加演示视频步骤
-
-如果您想添加项目演示视频，有以下几种方案：
-
-### 方案 1：将视频文件放在项目中（推荐用于小文件）
-
-1. **准备视频文件**
-   - 将视频文件重命名为 `demo.mp4`（或其他名称）
-   - 建议视频大小 < 50MB，格式为 MP4
-
-2. **放置视频文件**
-   ```bash
-   # 将视频文件复制到 docs/assets/ 目录
-   cp your_demo_video.mp4 docs/assets/demo.mp4
-   ```
-
-3. **更新 README**
-   - 在 README 的"项目演示"部分，取消注释方案1的代码
-   - 确保视频路径正确：`docs/assets/demo.mp4`
-
-4. **提交到 Git**
-   ```bash
-   git add docs/assets/demo.mp4
-   git commit -m "添加项目演示视频"
-   git push
-   ```
-
-**注意**：GitHub 不支持直接在 README 中播放视频，用户需要点击下载。如果视频较大，建议使用方案 2 或 3。
-
-### 方案 2：上传到视频平台（推荐用于大文件）
-
-#### 使用 Bilibili
-
-1. **上传视频到 Bilibili**
-   - 登录 Bilibili，上传您的演示视频
-   - 获取视频链接（如：`https://www.bilibili.com/video/BVxxxxx`）
-
-2. **更新 README**
-   - 在 README 的"项目演示"部分，取消注释 Bilibili 的代码
-   - 将 `YOUR_VIDEO_ID` 替换为您的视频 ID
-
-#### 使用 YouTube
-
-1. **上传视频到 YouTube**
-   - 登录 YouTube，上传您的演示视频
-   - 获取视频链接（如：`https://www.youtube.com/watch?v=xxxxx`）
-
-2. **更新 README**
-   - 在 README 的"项目演示"部分，取消注释 YouTube 的代码
-   - 将 `YOUR_VIDEO_ID` 替换为您的视频 ID
-
-### 方案 3：使用 GitHub Releases
-
-1. **创建 Release**
-   - 在 GitHub 仓库页面，点击 "Releases" → "Create a new release"
-   - 填写版本号（如 `v1.0.0`）和描述
-
-2. **上传视频**
-   - 在 "Attach binaries" 部分，拖拽上传视频文件
-   - 发布 Release
-
-3. **更新 README**
-   - 在 README 的"项目演示"部分，取消注释方案3的代码
-   - 将 `YOUR_USERNAME`、`YOUR_REPO`、`v1.0.0` 和 `demo.mp4` 替换为实际值
-
-### 方案 4：使用 GIF 动画（轻量级替代）
-
-如果视频文件太大，可以制作 GIF 动画：
-
-1. **制作 GIF**
-   - 使用工具（如 [ScreenToGif](https://www.screentogif.com/) 或在线工具）将视频转换为 GIF
-   - 建议 GIF 大小 < 10MB
-
-2. **添加到项目**
-   ```bash
-   cp demo.gif docs/assets/demo.gif
-   ```
-
-3. **在 README 中显示**
-   ```markdown
-   ![项目演示](docs/assets/demo.gif)
-   ```
-
-### 推荐方案
-
-- **小视频（< 50MB）**：使用方案 1，直接放在项目中
-- **大视频（> 50MB）**：使用方案 2，上传到 Bilibili 或 YouTube
-- **快速预览**：使用方案 4，制作 GIF 动画
 
 ## 🤝 贡献
 
