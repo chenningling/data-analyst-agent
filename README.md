@@ -8,17 +8,9 @@
 
 ### 演示视频
 
-> **📹 观看演示**：[点击下载演示视频](docs/assets/demo.mp4) | [在线观看（GitHub Pages）](#)
-
 <video width="800" controls>
-  <source src="docs/assets/demo.mp4" type="video/mp4">
-  您的浏览器不支持视频播放。请<a href="docs/assets/demo.mp4" download>点击下载</a>视频文件。
+  <source src="https://github.com/chenningling/data-analyst-agent/raw/main/docs/assets/demo.mp4" type="video/mp4">
 </video>
-
-**💡 提示**：
-- GitHub README 不支持直接播放视频，请点击上方链接下载后观看
-- 视频格式：MP4，大小：39MB
-- 如需在线播放，建议使用 [GitHub Pages](https://pages.github.com/) 托管项目
 
 ## ✨ 功能特点
 
